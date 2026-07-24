@@ -3,11 +3,49 @@
 Linq is the messaging layer we use to send and receive iMessage (with RCS + SMS
 fallback) from code. CLI + REST API over real Apple infrastructure.
 
-## Account
+## TWO ACCOUNTS — read this first
+
+There are two separate Linq accounts on this machine, one per agent, so the two
+can text **each other**. A single account cannot message itself, and each shared
+line caps at 20 contacts, so two lines also doubles the demo headroom.
+
+| | **Closer** (this repo) | Marcus (the seller) |
+|---|---|---|
+| Role | buyer / negotiator | seller |
+| Linq Number | **+12052611117** | +12054909563 |
+| CLI profile | `closer` | `seller` |
+| Login email | wdorman26@gmail.com | wdorman26+seller@gmail.com |
+| Repo | `~/hackathon-sf-001/closer` | `~/seller-agent` |
+| Port | 8000 | 8787 |
+
+`~/.linq/config.json` stores ONE *active* profile shared by every process on the
+machine. `linq profile use seller` in any terminal would silently repoint
+anything relying on the default at the seller's number — no error, wrong line.
+Two defences are in place:
+
+- `closer/.env` sets `LINQ_API_KEY` and `LINQ_FROM_NUMBER` **explicitly**, so
+  this app never reads the shared file and cannot drift.
+- **Every `linq` CLI command for this account needs `--profile closer`.**
+  Without it the CLI uses whatever is active, which is how a demo contact ends
+  up on the seller's line instead of ours.
+
+```bash
+linq profile list                    # shows which is active; we ignore it
+linq doctor --profile closer
+linq contacts add +1555... --profile closer
+linq webhooks listen --profile closer --forward-to http://localhost:8000/webhook
+```
+
+**Attachments are bound to the account that uploaded them** — another account's
+`attachment_id` returns 404. Media uploaded under `closer` cannot be sent from
+the seller's line, and vice versa.
+
+## Account (this app)
 
 | Field | Value |
 |---|---|
 | Linq Number | `+12052611117` |
+| CLI profile | `closer` |
 | Tier | Free |
 | Line type | Shared Line |
 | Login email | wdorman26@gmail.com |
