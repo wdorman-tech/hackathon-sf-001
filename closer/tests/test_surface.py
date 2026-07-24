@@ -378,13 +378,24 @@ class TestReactionRouting:
         return linq.InboundReaction(chat_id="c1", sender=PHONE,
                                     message_id="m1", reaction=kind)
 
-    def test_question_explains_the_math(self, store, monkeypatch, camry) -> None:
+    def test_question_explains_the_math_with_the_chart(self, store, monkeypatch,
+                                                       camry) -> None:
+        """❓ answers in prose AND in the picture — the flat stretch in the
+        curve is the argument, so the explanation carries the same PNG."""
+        delivered: list[tuple] = []
+        monkeypatch.setattr(main, "_deliver",
+                            lambda phone, msg, *, effect, image:
+                            delivered.append((phone, msg, effect, image)))
         camry.user_id, camry.phone = USER, PHONE
         store.save_deal(camry)
         store.set_focus(USER, camry.id)
-        sent = self._spy(monkeypatch)
+
         main._process_reaction(self._rx("question"))
-        assert len(sent) == 1 and "Why" in sent[0][1]
+
+        assert len(delivered) == 1
+        phone, msg, effect, image = delivered[0]
+        assert phone == PHONE and "Why" in msg and effect is None
+        assert image is not None and image[0].startswith(PNG_MAGIC)
 
     def test_like_confirms_the_offer_is_out(self, store, monkeypatch, camry) -> None:
         camry.user_id, camry.phone = USER, PHONE
@@ -458,3 +469,59 @@ class TestInboundAcknowledgement:
         main._signal_reaction(
             linq.InboundMessage(message_id="m1", sender=PHONE), camry)
         assert reacts == ["love"]
+
+
+class TestPngDelivery:
+    """§5.5 — the chart rides along, and never costs the reply."""
+
+    def test_card_and_stats_get_a_png(self, store, camry) -> None:
+        camry.user_id, camry.phone = USER, PHONE
+        store.save_deal(camry)
+        image = main._card_image(camry, "deal")
+        assert image is not None and image[0].startswith(PNG_MAGIC)
+        assert image[1].endswith(".png")
+
+        stats = main._card_image(camry, "stats")
+        assert stats is not None and stats[0].startswith(PNG_MAGIC)
+
+    def test_other_replies_get_no_image(self, store, camry) -> None:
+        """A list, a help card or a rename has no chart to draw."""
+        for kind in ("list", "help", "explain", None):
+            assert main._card_image(camry, kind) is None
+
+    def test_kill_switch_disables_rendering(self, store, camry, monkeypatch) -> None:
+        monkeypatch.setattr(main, "PNG_CARDS", False)
+        assert main._card_image(camry, "deal") is None
+
+    def test_a_render_failure_costs_nothing(self, store, camry, monkeypatch) -> None:
+        monkeypatch.setattr(main.render, "deal_png",
+                            lambda d: (_ for _ in ()).throw(RuntimeError("no fonts")))
+        assert main._card_image(camry, "deal") is None
+
+    def test_delivery_falls_back_to_text_when_the_upload_fails(self, monkeypatch) -> None:
+        """The text is the deliverable. A CDN hiccup must not cost the number."""
+        plain: list[str] = []
+        monkeypatch.setattr(linq, "send_media_bytes",
+                            lambda *a, **k: (_ for _ in ()).throw(
+                                linq.LinqError("503 from S3")))
+        monkeypatch.setattr(linq, "send", lambda to, text=None, **k: plain.append(text))
+
+        main._deliver(PHONE, "here is your card", effect=None,
+                      image=(b"\x89PNG not really", "deal-card.png"))
+        assert plain == ["here is your card"]
+
+    def test_delivery_keeps_the_effect_on_the_media_send(self, monkeypatch) -> None:
+        """Closing on a `card` reply must still fire confetti."""
+        calls: list[dict] = []
+        monkeypatch.setattr(linq, "send_media_bytes",
+                            lambda to, text, data, fn, **k: calls.append(k))
+        main._deliver(PHONE, "closed", effect="confetti",
+                      image=(b"png", "deal-card.png"))
+        assert calls == [{"effect": "confetti"}]
+
+    def test_plain_replies_still_send_without_an_image(self, monkeypatch) -> None:
+        sent: list[tuple[str, str]] = []
+        monkeypatch.setattr(linq, "send_effect",
+                            lambda to, text, fx: sent.append((text, fx)))
+        main._deliver(PHONE, "we closed", effect="confetti", image=None)
+        assert sent == [("we closed", "confetti")]

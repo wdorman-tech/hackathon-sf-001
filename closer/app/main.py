@@ -35,7 +35,7 @@ from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import FileResponse, HTMLResponse  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
-from app import cards, demo, intent, linq, llm, research, runware  # noqa: E402
+from app import cards, demo, intent, linq, llm, render, research, runware  # noqa: E402
 from app import store as store_mod  # noqa: E402
 from app.auth import DEV_USER_ID, clerk_enabled, require_user  # noqa: E402
 from app.state import Deal, DealState, user_id_for  # noqa: E402
@@ -44,6 +44,10 @@ STORE = store_mod.get_store()
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 CRON_SECRET = os.getenv("CRON_SECRET", "").strip()
 DEMO_MODE = os.getenv("DEMO_MODE", "").lower() in ("1", "true", "yes")
+# §5.5 — the deal card as a real chart in the bubble. On by default; the kill
+# switch exists because this is the one decoration that costs a network round
+# trip on the critical path, and a demo needs a way out that isn't a code edit.
+PNG_CARDS = os.getenv("PNG_CARDS", "true").lower() not in ("0", "false", "no")
 CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()] or ["*"]
 
 URL_RE = re.compile(r"https?://\S+")
@@ -496,6 +500,30 @@ def _outcome_effect(deal: Deal, before: DealState) -> Optional[str]:
     return None
 
 
+def _card_image(deal: Deal, kind: Optional[str]) -> Optional[tuple[bytes, str]]:
+    """The PNG that belongs with this reply, or None (§5.5).
+
+    Keyed off the `card_kind` the dispatcher already returns, so every path that
+    produces a deal card — `card`, a SWITCH, the ❓ explanation — gets the chart
+    without a second decision about when to attach one.
+
+    Rendering is local (matplotlib, no network) and takes a few hundred ms, all
+    of it inside the typing indicator. `PNG_CARDS=false` turns the whole thing
+    off from `.env` without a deploy, which is the switch to reach for if the
+    chart ever misbehaves in front of an audience.
+    """
+    if not PNG_CARDS or not kind:
+        return None
+    try:
+        if kind == "deal":
+            return render.deal_png(deal), "deal-card.png"
+        if kind == "stats":
+            return render.stats_png(_real_deals(deal.user_id)), "stats.png"
+    except Exception:
+        return None                    # the Unicode card is the deliverable
+    return None
+
+
 def route_message(deal: Deal, text: Optional[str], media: list[str], *,
                   send: bool, research_bg: bool = True,
                   parked: Optional[Deal] = None) -> str:
@@ -515,16 +543,36 @@ def route_message(deal: Deal, text: Optional[str], media: list[str], *,
 
     if send and deal.phone and linq.available():
         effect = _outcome_effect(deal, before)
+        _deliver(deal.phone, reply, effect=effect, image=_card_image(deal, kind))
+    return reply
+
+
+def _deliver(phone: str, reply: str, *, effect: Optional[str],
+             image: Optional[tuple[bytes, str]]) -> None:
+    """Put one reply in the thread, with whatever decoration it earned.
+
+    The text is the deliverable and the image is an upgrade on top of it, so the
+    fallback ladder is strict: try the attachment, and if the upload or the send
+    fails for any reason, send the same text without it. §5.5 is explicit that
+    the Unicode card ships first and the chart never blocks it — a CDN hiccup
+    must not cost the user their number.
+    """
+    if image is not None:
+        data, filename = image
         try:
+            linq.send_media_bytes(phone, reply, data, filename, effect=effect)
+            return
+        except Exception:
+            pass                       # fall through to the plain send
+    try:
+        if effect:
             # `send_effect` retries without the effect if the API rejects it, so
             # the close message lands even on the day `confetti` changes meaning.
-            if effect:
-                linq.send_effect(deal.phone, reply, effect)
-            else:
-                linq.send(deal.phone, reply)
-        except Exception:
-            pass
-    return reply
+            linq.send_effect(phone, reply, effect)
+        else:
+            linq.send(phone, reply)
+    except Exception:
+        pass
 
 
 # ── who is this, and which of their deals are we talking about ───────────────
@@ -653,7 +701,11 @@ def _process_reaction(rx: linq.InboundReaction) -> None:
         kind = rx.reaction
 
         if kind == "question":                      # ❓ explain the math
-            _send_now(phone, cards.explain(deal))
+            # The chart is the answer to "why" more than the prose is — the
+            # flat stretch in the curve IS the argument — so the explanation
+            # carries the same PNG the `card` command would.
+            _deliver(phone, cards.explain(deal), effect=None,
+                     image=_card_image(deal, "deal"))
             return
         if kind == "like":                          # 👍 "sent it"
             _send_now(phone, cards.offer_locked(deal))
