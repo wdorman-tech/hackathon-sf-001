@@ -1,0 +1,173 @@
+@import "tailwindcss";
+@import "@fontsource-variable/dm-sans";
+
+:root {
+  /* Dark theme — neutral grayscale surface (no blue tint), lime-green brand accent. */
+  --background: 0 0% 7%;
+  --foreground: 0 0% 96%;
+  --card: 0 0% 10%;
+  --card-foreground: 0 0% 96%;
+  --popover: 0 0% 10%;
+  --popover-foreground: 0 0% 96%;
+  --primary: 88 100% 50%;
+  --primary-foreground: 0 0% 7%;
+  --secondary: 0 0% 15%;
+  --secondary-foreground: 0 0% 92%;
+  --muted: 0 0% 15%;
+  --muted-foreground: 0 0% 65%;
+  --accent: 88 100% 14%;
+  --accent-foreground: 88 100% 60%;
+  --destructive: 0 72% 58%;
+  --destructive-foreground: 0 0% 96%;
+  --border: 0 0% 20%;
+  --input: 0 0% 20%;
+  --ring: 88 100% 50%;
+  --radius: 0rem;
+
+  /* Closer-specific extensions */
+  --paper: 0 0% 9%;
+  --hairline: 0 0% 18%;
+  --ease-spring: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-out-soft: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+  --color-paper: hsl(var(--paper));
+  --font-sans: var(--font-dm-sans);
+  --font-heading: var(--font-dm-sans);
+  /* Sharp/geometric: the whole radius scale collapses to 0 — no rounded corners anywhere. */
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
+  --radius-xl: 0px;
+  --radius-2xl: 0px;
+  --radius-3xl: 0px;
+}
+
+:root {
+  --font-dm-sans: "DM Sans Variable", "DM Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-money: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+}
+
+* {
+  border-color: hsl(var(--border));
+  box-sizing: border-box;
+}
+
+.border   { border-width: 0.3px; }
+.border-t { border-top-width: 0.3px; }
+.border-b { border-bottom-width: 0.3px; }
+.border-l { border-left-width: 0.3px; }
+.border-r { border-right-width: 0.3px; }
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-family: var(--font-dm-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3 {
+  font-family: var(--font-dm-sans);
+  letter-spacing: -0.02em;
+}
+
+::selection {
+  background: hsl(var(--primary) / 0.16);
+  color: hsl(var(--primary));
+}
+
+/* Numerals: dollar figures, percentages, belief-curve stats always render mono/tabular —
+   a small tell that says "the math is real," which is the entire pitch of this product. */
+.money {
+  font-family: var(--font-money);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Fixed film-grain overlay — never on scrolling containers ───────────── */
+.grain-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  pointer-events: none;
+  opacity: 0.02;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* ── Scroll-reveal primitive (paired with an IntersectionObserver hook) ──── */
+.reveal {
+  opacity: 0;
+  transform: translateY(28px);
+  filter: blur(6px);
+  transition: opacity 900ms var(--ease-out-soft), transform 900ms var(--ease-out-soft), filter 900ms var(--ease-out-soft);
+  will-change: transform, opacity;
+}
+.reveal.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+  filter: blur(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reveal {
+    transition: none;
+    opacity: 1;
+    transform: none;
+    filter: none;
+  }
+}
+
+@keyframes float-slow {
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  50%      { transform: translate3d(0, -14px, 0); }
+}
+
+@keyframes pulse-dot {
+  0%   { box-shadow: 0 0 0 0 hsl(var(--primary) / 0.45); }
+  70%  { box-shadow: 0 0 0 10px hsl(var(--primary) / 0); }
+  100% { box-shadow: 0 0 0 0 hsl(var(--primary) / 0); }
+}
+
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@layer utilities {
+  .animate-fade-in {
+    animation: fade-in-up 0.4s var(--ease-out-soft) both;
+  }
+  .animate-float-slow {
+    animation: float-slow 7s var(--ease-out-soft) infinite;
+  }
+  .animate-pulse-dot {
+    animation: pulse-dot 2s infinite;
+  }
+  .text-balance {
+    text-wrap: balance;
+  }
+}
