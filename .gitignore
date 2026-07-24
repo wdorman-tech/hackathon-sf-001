@@ -1,0 +1,6 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+linq-api-key.txt
+.linq/
