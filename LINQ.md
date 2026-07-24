@@ -151,6 +151,54 @@ Reactions: `love`, `like`, `dislike`, `laugh`, `emphasize`, `question`,
 Typing indicators only surface in conversations with recent activity — if one
 doesn't appear, send a fresh message to wake the chat and retry.
 
+### Attachments — a two-step presigned upload, not a file post
+
+`linq attachments upload` does **not** take a path. It takes the file's
+metadata, returns a presigned S3 `PUT` URL, and you upload the bytes yourself.
+The `download_url` it hands back is what `--attachment-url` wants:
+
+```bash
+SZ=$(stat -f%z card.png)
+RESP=$(linq attachments upload --profile closer \
+         --filename card.png --content-type image/png --size "$SZ" --json)
+UP=$(echo "$RESP" | jq -r .upload_url)      # presigned, expires in 15 min
+DL=$(echo "$RESP" | jq -r .download_url)    # cdn.linqapp.com, permanent
+
+curl -X PUT "$UP" -H "Content-Type: image/png" -H "Content-Length: $SZ" \
+     --data-binary @card.png                # must echo both required_headers
+
+linq messages send <chat-id> --profile closer --message "your card" \
+     --attachment-url "$DL" --json
+```
+
+`required_headers` in the response is not advisory — S3 signs over
+`content-length` and `content-type`, so omitting either fails the signature.
+The sent message comes back with two parts: a `text` part and a `media` part
+carrying `filename`, `mime_type`, `size_bytes`, and the CDN `url`.
+
+### Phase 0 probe results — verified 2026-07-24, closer profile
+
+Every affordance this project leans on, exercised against the live API. All
+green; no CLI-subprocess fallback needed for any of them.
+
+| Probe | Result |
+|---|---|
+| `webhooks events` | ✅ 21 event types. `reaction.added` / `reaction.removed` and `chat.typing_indicator.started` / `.stopped` are both subscribable |
+| `messages send --effect confetti` | ✅ echoes `effect: {name: "confetti", type: "screen"}` |
+| `messages react <id> --type like` | ✅ `{"status": "accepted"}`. Works on our own outbound messages too |
+| `chats typing <id>` | ✅ `{"success": true, "action": "typing.start"}` |
+| `attachments upload` → PUT → send | ✅ full round-trip, `PUT` returns 200, message carries the media part |
+| listener → backend forward | ✅ `message.received` → `POST /webhooks/linq` → `200 OK` in 6ms |
+| inbound text → agent reply | ✅ 1 second, phone to phone |
+
+**Two Linq Shared lines cannot bootstrap a conversation with each other.**
+Cross-adding contacts is not enough — the inbound-first gate is unconditional,
+and both directions report `Can't message this contact yet` until a real handset
+texts in. This matters for the Closer ↔ Marcus demo: the chat between
+`+12052611117` and `+12054909563` has to be opened once from a physical phone
+(or via the `contacts add` share link), after which both agents can text freely.
+Do that during setup, not on stage.
+
 ### Receiving — webhooks
 
 ```bash
@@ -199,7 +247,7 @@ by Apple. Design anything we ship as a conversation.
 | `linq chats create / list / get / typing` | Chats |
 | `linq messages send / list / get / react / thread / delete` | Messages |
 | `linq webhooks listen / create / list / get / update / delete / events` | Webhooks |
-| `linq attachments upload <file>` | Upload, returns URL for `--attachment-url` |
+| `linq attachments upload --filename --content-type --size` | Presigned `PUT` URL + permanent `download_url`; you upload the bytes |
 | `linq profile list / use / create / show / get / set` | Multi-account profiles |
 
 Phone numbers are E.164 (`+14155551234`). Chat, message, webhook, and token IDs
