@@ -36,7 +36,7 @@ product decision rather than by engineering.
 
 | # | Gap | Detail |
 |---|---|---|
-| B1 | **Screenshot path 400s** | `app/runware.py:83` sends `images` at task top level → `unsupportedParameter: 'images' … not supported for text inference`. Verified working shape in Lane A1. Screenshots matter *more* now — a screenshot is the most natural thing to send an agent from a phone. |
+| B1 | **Screenshot path 400s** | `app/runware.py:83` sends `images` at task top level → `unsupportedParameter: 'images' … not supported for text inference`. Verified working shape in §7 A1. Screenshots matter *more* now — a screenshot is the most natural thing to send an agent from a phone. |
 | B5 | **Inbound iMessage not wired** | No `linq webhooks listen --forward-to` process running. Texting `+12052611117` currently hits nothing. This is now the single point of failure for the entire product. |
 | B6 | `RESEARCH_MODE=mock` | `.env` serves the canned Mazda payload; the live agent that works is switched off. |
 | B7 | `MemoryStore` | Every deal dies on backend restart. Fatal now — the thread is the only place a user's history lives, and they can't re-derive it. |
@@ -76,7 +76,7 @@ Vercel landing at `closer.vercel.app` whose only content is the Linq share-link
 QR code and a live "$ saved across all deals" counter.** Judges scan it with a
 phone camera, Messages opens with the number and a pre-filled draft, and they
 are onboarded in one tap. It is ~30 minutes, it is not on the critical path, and
-it is Lane D's last task — after everything else is green. Anyone can skip it
+it is Dev 1's last Phase-2 task — after everything else is green. Either of you can skip it
 without touching the demo.
 
 ---
@@ -131,7 +131,7 @@ than a dashboard, because everyone in the room already knows what it should look
 like and can tell it isn't faked.
 
 **The one new fragility, stated plainly**: if `linq webhooks listen` dies, the
-product is silently dead — no error, no 500, texts just vanish. Lane C owns
+product is silently dead — no error, no 500, texts just vanish. Dev 1 owns
 supervision, a `/health/inbound` staleness probe, and a preflight ping. Treat it
 with the paranoia previously reserved for the tunnel.
 
@@ -158,7 +158,7 @@ That is the whole auth system. Consequences, all good:
   "text from a second phone, see nothing" and is easier to prove.
 - **`app/auth.py` and `pyjwt` stay in the tree but stop being load-bearing.**
   The `/api/*` Clerk-authed routes remain for local curl-driven testing and bind
-  to `127.0.0.1` only. Do not delete them in Lane A — Lane D uses them to drive
+  to `127.0.0.1` only. Do not delete them — the demo runbook uses them to drive
   scripted rehearsals without a phone.
 
 **Trust model, documented as a deliberate choice.** We trust Linq's sender
@@ -167,7 +167,7 @@ demo of a negotiation coach — where the worst case is someone seeing another
 person's car deal — that is the right trade. Write it as a comment in
 `_resolve_user`, not as a footnote nobody reads.
 
-**Abuse limits, because there is no signup gate** (Lane A, ~15 min):
+**Abuse limits, because there is no signup gate** (Dev 1, Sync 1, ~15 min):
 - max 10 deals per phone; the 11th replies "you've got 10 running — close or
   walk one first, or say *delete the Civic*"
 - max 20 inbound messages per phone per minute, then a polite throttle reply
@@ -236,7 +236,7 @@ actually said 5,600" is something a person genuinely does mid-negotiation.
 → substring of `title` → list index. Ambiguous match returns the candidates as a
 numbered list rather than guessing.
 
-### 4.2 Store protocol — additions (Lane A owns)
+### 4.2 Store protocol — additions (Dev 1 owns, Phase 1)
 
 ```python
 class Store(Protocol):
@@ -294,7 +294,7 @@ floor_map  floors  floor_point_est  floor_std  asking  R  V
 last_seller_price  last_user_offer  turns  rationale
 ```
 
-So the trajectory is a derivation over `feed`, added to `state.py` (Lane A):
+So the trajectory is a derivation over `feed`, added to `state.py` (Dev 1, Phase 1):
 
 ```python
 def trajectory(self) -> list[dict]:
@@ -351,7 +351,7 @@ def help_card() -> str: ...
 def onboarding() -> str: ...
 ```
 
-`app/render.py` (Lane B, second) exposes:
+`app/render.py` (Dev 2, Phase 2) exposes:
 
 ```python
 def deal_png(deal: Deal) -> bytes: ...     # matplotlib, Agg backend, 1200x900
@@ -436,7 +436,7 @@ matches the existing palette so the fallback slide and the card look like one
 product. Render with matplotlib's `Agg` backend (no display server, already have
 numpy). Add `matplotlib>=3.9` to `requirements.txt`; it is the only new dep.
 
-### 4.7 Linq client surface — additions (Lane C owns `app/linq.py`)
+### 4.7 Linq client surface — additions (Dev 2 owns `app/linq.py` in Phase 2)
 
 ```python
 def send(to, text) -> dict: ...                                   # exists
@@ -464,24 +464,69 @@ call sites do.
 
 ### 4.8 File ownership (merge-conflict firewall)
 
-| Path | Owner lane | Everyone else |
+The team is **two developers**. Ownership is per-file and it **changes at Sync 1**
+— that flip is the single most likely source of a merge conflict, so it is stated
+twice and gated.
+
+| Path | Phase 1 | Phase 2 |
 |---|---|---|
-| `closer/app/main.py`, `state.py`, `store.py`, `runware.py`, `research.py`, `llm.py` | A | read only |
-| `closer/app/intent.py` *(new)*, `cards.py` *(new)*, `render.py` *(new)* | B | read only |
-| `closer/app/linq.py` | C | read only |
-| `closer/tests/**` | A owns existing; B adds `test_intent.py` / `test_cards.py`; C adds `test_linq_client.py`; D adds `tests/fixtures/` | — |
-| `.env`, `.env.example`, `Makefile`, `scripts/**` | C | propose via C |
-| `update_1.md`, `DEMO.md`, `LINQ.md`, `README.md` | D | append-only sections |
+| `closer/app/main.py` | **Dev 1** | **Dev 2** ← flips |
+| `closer/app/state.py`, `store.py`, `runware.py`, `llm.py` | Dev 1 | Dev 1 (frozen after Sync 1) |
+| `closer/app/research.py` | Dev 1 | Dev 1 |
+| `closer/app/intent.py` *(new)*, `cards.py` *(new)* | **Dev 2** | Dev 2 |
+| `closer/app/linq.py`, `render.py` *(new)* | — (stubbed at Sync 1) | **Dev 2** |
+| `.env`, `.env.example`, `Makefile`, `scripts/**` | Dev 1 | Dev 1 |
+| `closer/tests/**` | Dev 1 owns existing; Dev 2 adds `test_intent.py`, `test_cards.py`, `tests/fixtures/` | same |
+| `DEMO.md` | — | Dev 1 |
+| `update_1.md`, `LINQ.md`, `README.md` | either, append-only sections | same |
 | `closer/static/**`, `closer/app/auth.py`, `demo.py` | nobody touches this update | — |
 
-**The one cross-lane seam**: A owns `main.py`, but B's router has to be wired
-into it. So B ships `intent.classify(text, has_image, deals, meta) -> Intent`
-as a **pure function with no imports from `main`**, and A wires it in a single
-~20-line dispatch block during Phase 2. B tests it standalone from hour zero. A
-writes the dispatch against the frozen signature before B's code exists.
+**Two frozen seams, one per phase boundary.** Both are stub files committed to
+`main` *before* the branches diverge, so each dev codes against a signature rather
+than against the other person's unwritten code.
 
-Two rules keep merges boring: **one lane per file**, and **rebase on `main`
-before every PR**.
+*Seam 1 — committed before Phase 1* (`intent.py`, `cards.py`, per §4.1 and §4.6):
+
+```python
+# closer/app/intent.py
+from dataclasses import dataclass
+from typing import Literal, Optional
+
+Kind = Literal["RELAY", "NEW", "LIST", "SWITCH", "CARD", "STATS",
+               "CLOSE", "WALK", "UNDO", "RENAME", "DELETE", "HELP"]
+
+@dataclass
+class Intent:
+    kind: Kind
+    target: Optional[str] = None   # SWITCH / RENAME / DELETE argument
+    url: Optional[str] = None      # NEW
+    text: Optional[str] = None     # RELAY passthrough
+
+def classify(text: Optional[str], *, has_image: bool,
+             deals: list, meta: dict) -> Intent:
+    """Pure. No I/O, no LLM, no import from main.
+    Hard rule: a message containing a price is RELAY, never a command."""
+    raise NotImplementedError
+```
+
+```python
+# closer/app/cards.py
+def deal_card(deal) -> str: ...
+def deal_list(deals, focus_id: str | None) -> str: ...
+def stats_card(deals) -> str: ...
+def help_card() -> str: ...
+def onboarding() -> str: ...
+```
+
+Dev 2 tests `classify` standalone from minute zero. Dev 1 writes the dispatch
+against it at Sync 1, before Dev 2's implementation exists.
+
+*Seam 2 — committed at Sync 1* (`linq.py`, per §4.7): `react`, `typing`,
+`send_media`, `send_effect` as no-op stubs. Dev 2 fills them in **and wires the
+call sites**, which is why `main.py` changes hands.
+
+Two rules keep merges boring: **one file, one owner, one phase**, and **rebase on
+`main` before every push**.
 
 ---
 
@@ -607,17 +652,30 @@ number. Put it on the final slide and on the optional landing page.
   ("remind me if he goes quiet"), on a deal they started, once. Build it that way
   or not at all.
 - **`linq messages thread`** to rehydrate history after a restart — nice
-  insurance, superseded by `FileStore` (Lane A3). Skip.
+  insurance, superseded by `FileStore` (A3). Skip.
 
 ---
 
 ## 6. Phases
 
-### Phase 0 — Setup + probes, 45 minutes, everyone together
+Two developers, four blocks. Each build block is ~2 hours per dev and ends on a
+gate you can **run as a command** — so both halves finish "on = done" at the same
+barrier, with nothing to argue about.
 
-Nobody starts lane work until these are green. The probes matter: three of the
-Linq features this plan leans on have unverified REST shapes, and finding that
-out at hour five is how a demo dies.
+```
+Phase 0  ──── together, 45 min ──── inbound proven, probes answered, seams frozen
+Phase 1  ──── Dev 1 ‖ Dev 2, ~2h ── engine & state  ‖  intent & cards
+Sync 1   ──── together, 30 min ──── dispatch wired. THE PRODUCT EXISTS.
+                                    seam 2 frozen · main.py changes hands
+Phase 2  ──── Dev 1 ‖ Dev 2, ~2h ── ops & demo      ‖  the message surface
+Sync 2   ──── together, 45 min ──── kill drills, offline run, two timed rehearsals
+```
+
+### Phase 0 — Setup + probes, 45 minutes, together
+
+Nothing splits until these are green. The probes matter: three of the Linq
+features this plan leans on have unverified REST shapes, and finding that out at
+hour five is how a demo dies.
 
 1. **Free port 8000 and kill the stale :8010 process** (gap B9 — it has no Linq
    key and reports `linq:false`):
@@ -645,53 +703,85 @@ out at hour five is how a demo dies.
    ```
    Run each with `--json` and capture the request/response. If the CLI is
    verbose enough to reveal the HTTP call, write the shapes into `LINQ.md`
-   §Command reference. If not, Lane C shells out to the CLI and moves on.
+   §Command reference. If not, Dev 2 shells out to the CLI in Phase 2 and moves on.
 4. **Probe inbound tapbacks.** With `linq webhooks listen` running, tapback a
    message from the phone. Does an event arrive? Capture the JSON. **This single
    observation decides whether §5.2 ships.** If nothing arrives in 10 seconds,
-   cut §5.2 and say so in the channel — do not investigate further.
-5. **Cut the branches:**
+   cut §5.2 and say so out loud — do not investigate further.
+5. **Freeze seam 1 and cut the branches.** Commit the `intent.py` / `cards.py`
+   stubs from §4.8 to `main` **before** branching. Ten minutes here removes every
+   blocking dependency in Phase 1:
    ```bash
    git checkout main && git pull
-   for l in engine agent linq demo; do git branch lane/$l; done
+   git add closer/app/intent.py closer/app/cards.py
+   git commit -m "chore: freeze the intent/cards seam"
+   git push origin main
+   git branch lane/engine   # Dev 1
+   git branch lane/agent    # Dev 2
    ```
-6. **Paste §4 into the channel.** The contract is the coordination mechanism.
+6. **Read §4 together.** The contract is the coordination mechanism; §4.1 and
+   §4.8 are the two that stop you stepping on each other.
 
 **Gate**: a text to `+12052611117` gets a reply from a freshly booted backend
-reporting `{"ok":true,…,"linq":true}` on `/health`, and the probe results (§4.7
-resolved to verified-or-CLI-fallback) are in the channel.
+reporting `{"ok":true,…,"linq":true}` on `/health`; the probe results are written
+down (§4.7 resolved to verified-or-CLI-fallback); both stub files are on `main`.
 
 ---
 
-### Phase 1 — Parallel build (~2.5–3 hours, 4 lanes, no cross-blocking)
+### Phase 1 — Build the halves blind (~2h each)
 
-| Lane | Branch | Deliverable |
+Neither dev needs the other's code. Both work against seam 1.
+
+| | **Dev 1 — engine & state** (`lane/engine`) | **Dev 2 — intent & cards** (`lane/agent`) |
 |---|---|---|
-| **A — Engine & state** | `lane/engine` | Vision fix, phone identity, multi-deal focus, FileStore, trajectory, research hardening, limits |
-| **B — Agent surface** | `lane/agent` | Intent router, Unicode cards, PNG cards, all user-facing copy |
-| **C — Linq maximalism** | `lane/linq` | Typing, tapbacks in/out, effects, attachments, listener supervision, one-command boot |
-| **D — Demo** | `lane/demo` | Marcus arc, screenshot fixtures, `DEMO.md`, QR slide, optional landing page |
-
-None of them block each other. B builds against fixture `Deal` objects. C builds
-against the Linq API with a throwaway chat. D scripts against `/simulate`.
+| Owns | `main.py` `state.py` `store.py` `runware.py` `llm.py` | `intent.py` `cards.py` `tests/fixtures/` |
+| 1 | **Vision fix** (§7 A1, ~30 min) — images as Anthropic content parts on the last user message, URLs fetched and base64'd, downscale to 1568px. Unit test per input form. | **Fixture first** (~5 min) — run the existing 4-turn `/simulate` arc, save `/state` output to `tests/fixtures/deal_camry.json`. Build cards against real numbers, not invented ones. |
+| 2 | **Multi-deal focus** (§7 A2, ~60 min) — `normalize_e164`, `_resolve_user`, focus + user-meta on all three stores, `_focused_deal` replacing `_resolve_or_create`, `nickname` + `closed_price`. **Delete `main.py:255-262`.** | **`intent.classify`** (§7 B1, ~45 min) — §4.1 grammar, pure, table-driven test with 40+ cases. The one that cannot break: every message containing a price returns `RELAY`. |
+| 3 | **`Deal.trajectory()`** (§4.4, ~10 min) — a derivation over `feed`, no new state. Do it early; it is what Dev 2's deal card plots. | **Four Unicode cards** (§4.6, ~45 min) — deal, list, stats, help. `python -m app.cards --demo` renders from the fixture. Then paste each into a real thread and look at it on a phone. |
+| 4 | **FileStore** (§7 A3, ~30 min) — JSON per deal under `data/deals/`, atomic write, `CLOSER_STORE_PATH=./data`, `closer/data/` in `.gitignore`. | **Copy** (§7 B3, ~20 min) — onboarding, help, ambiguous switch, throttle, deal-parked, research-blocked. |
+| **Done gate** | `pytest -q` green · two links from one phone produce two deals with focus on the second · restart the backend and the deals are still there · `python -m app.llm --vision tests/fixtures/chat1.png` prints a price | `pytest tests/test_intent.py tests/test_cards.py -q` green · `python -m app.cards --demo` prints all four **including the null states** (`snapshot is None`, `research is None`) — that is what a judge sees in the first thirty seconds |
 
 ---
 
-### Phase 2 — Integration (~45 min, sequential, one person driving)
+### Sync 1 — the product first exists (~30 min, together, Dev 1 driving)
 
-Merge in this order, running the gate after each:
+Both rebase on `main` and merge. Then, in one sitting:
 
-1. **A → main.** Gate: `pytest` green (target 285+), `/health` shows
-   `runware:true linq:true store:FileStore`, screenshot smoke extracts a price,
-   two links from one phone produce two deals.
-2. **B → main.** Gate: `python -m app.cards --demo` prints all four cards from a
-   fixture; `intent.classify` unit tests green including the "price beats
-   command" rule.
-3. **C → main.** Gate: `make dev` boots backend + supervised listener;
-   `/health/inbound` reports seconds since last event; a typing indicator and a
-   tapback both appear on a real phone.
-4. **D → main.** Gate: the demo script runs start to finish with nobody editing
-   anything.
+1. **Dev 1 writes the dispatch** in `route_message`: one branch per `Intent.kind`,
+   each calling `cards.*`. ~20 lines. Written against the signature, so it should
+   compile the first time.
+2. **Two small things Dev 1 lands while already inside `main.py`**: the
+   `/health/inbound` route, and the per-phone limits from §3 (10 deals,
+   20 msgs/min).
+3. **Run acceptance steps 1–7 and 13** from the block below.
+4. **Freeze seam 2** — commit `linq.py` no-op stubs for `react`, `typing`,
+   `send_media`, `send_effect` to `main`.
+
+**Ownership flips here. `main.py` goes to Dev 2 for Phase 2 and Dev 1 does not
+touch it again.** Dev 1's Phase-2 work is deliberately scoped to `research.py`,
+`scripts/`, `Makefile`, and `DEMO.md` so this holds without discipline.
+
+**Gate**: a link creates a second deal, `deals` lists both, `1` switches back, and
+a backend restart loses nothing. That is the MVP. Everything after this is polish
+that makes it feel like a product.
+
+---
+
+### Phase 2 — Enrich (~2h each)
+
+| | **Dev 1 — ops & demo** (`lane/engine`) | **Dev 2 — the message surface** (`lane/agent`) |
+|---|---|---|
+| Owns | `research.py` `scripts/` `Makefile` `.env` `DEMO.md` | `linq.py` `main.py` `render.py` `cards.py` |
+| 1 | **Supervised listener** (§7 C2, ~30 min) — `scripts/listen.sh`, restart-on-exit with backoff, timestamped log. This is now the top-ranked risk in the plan. | **Linq client** (§4.7, ~40 min) — `react`, `typing`, `send_media`, `send_effect`. Every decorative call `try/except: pass`, never blocking a turn. CLI subprocess is the fallback if the Phase-0 probes didn't resolve the REST shape. |
+| 2 | **`make dev` / `make preflight`** (§7 C3, ~30 min) — one-command boot; preflight texts a known contact and asserts a round trip; `make check-profile` asserts `linq whoami --profile closer` returns `+12052611117`. | **Wire typing + tapbacks** (§5.1, §5.3, ~30 min) — react on inbound *before* inference runs, typing bracketing research and every LLM turn, two research-trace bubbles streamed from the existing `on_step` callback. |
+| 3 | **Research hardening** (§7 A4, ~30 min) — `RESEARCH_MODE=live`, `User-Agent` on `fetch_page`, 40s wall cap, and the 403 fallback that asks "what are they asking?" instead of emitting `V=0`. | **Effects + attachments** (§5.4, §5.5, ~30 min) — confetti on close, fireworks on a new best, slam on walk. Deal card uploaded and sent as a real image. |
+| 4 | **Marcus arc + `DEMO.md`** (§7 D1, D4, ~40 min) — rehearse the five-message bluff sequence against `~/seller-agent`, write the runbook and the three recoveries, generate the QR share link. | **`render.py`** (§4.6, ~40 min) — matplotlib `Agg`, floor line with ±std band, reference lines at asking / V / R, callout on the bluff turn. `#0b0e14` background, `#5b8cff` accent. |
+| **Done gate** | `make dev` from a clean shell brings up both processes · kill the listener and it is back inside 5s · `make preflight` green · you can drive the full Marcus arc from the runbook without asking Dev 2 anything | A tapback, a typing indicator, and confetti all visibly land on a real iPhone · `card` returns a PNG chart in the thread · acceptance steps 8–12 pass |
+
+**If you are behind at Sync 1**, cut from Dev 2's Phase 2 in this order: PNG
+render → inbound tapbacks (§5.2) → effects → and from Dev 1's, research hardening
+(`RESEARCH_MODE=mock` covers the demo). Nothing in Phase 1 is cuttable — that is
+the update.
 
 **End-to-end acceptance — the actual MVP definition:**
 
@@ -718,15 +808,16 @@ Merge in this order, running the gate after each:
 13. Restart the backend, text "deals" → everything still there
 ```
 
-Steps 5–7 prove multi-deal. Step 9 proves the replay architecture. Step 12
-proves isolation. Step 13 proves B7 is fixed — and it is the one people forget
-until the laptop reboots at the worst possible moment.
+Steps 1–7 and 13 are the **Sync 1** gate. Steps 8–12 are **Dev 2's Phase 2**
+gate. Steps 5–7 prove multi-deal, step 9 proves the replay architecture, step 12
+proves isolation, and step 13 proves B7 is fixed — the one people forget until
+the laptop reboots at the worst possible moment.
 
 ---
 
-### Phase 3 — Demo hardening (~45 min)
+### Sync 2 — Demo hardening (~45 min, together)
 
-1. **Listener death drill.** Kill `linq webhooks listen` mid-demo. Confirm the
+1. **Listener death drill.** Kill `linq webhooks listen` mid-arc. Confirm the
    supervisor restarts it within seconds and the next text lands. This replaces
    the old tunnel drill and it is now the top risk.
 2. **Offline rehearsal.** Run the whole arc with wifi off: rules classifier
@@ -734,18 +825,30 @@ until the laptop reboots at the worst possible moment.
    every step. Prove it once, deliberately, with `RUNWARE_API_KEY` unset.
 3. **Warm start.** `DEMO_MODE=true` pre-seeds a mid-negotiation deal so "stats"
    and "deals" have something to show in the first fifteen seconds.
-4. **Two timed rehearsals**, every person able to drive solo.
+4. **Two timed rehearsals**, each of you able to drive solo. Whoever did not
+   write a half is the one who should drive it.
 5. **Fallback slide**: a screenshot of the deal card where the floor line
    flatlines through the bluff turn. If everything else fails, that image is the
    pitch.
 
 ---
 
-## 7. Lane detail
+## 7. Task detail
 
-### Lane A — Engine & state (`lane/engine`)
+Reference for the tasks scheduled in §6. Ids are stable — the phase tables point
+here rather than repeating themselves.
 
-Owner: strongest Python. All local, no deploy concerns.
+| Task | Who | When |
+|---|---|---|
+| A1 vision, A2 focus, A3 FileStore, `trajectory()` | Dev 1 | Phase 1 |
+| B1 intent, B2 cards, B3 copy | Dev 2 | Phase 1 |
+| A5 dispatch, `/health/inbound`, rate limits | Dev 1 | Sync 1 |
+| A4 research, C2 supervisor, C3 boot, D1/D4 demo | Dev 1 | Phase 2 |
+| C1 Linq client, B4 render, B5 explain, §5 wiring | Dev 2 | Phase 2 |
+
+### Dev 1 — engine & state (`lane/engine`)
+
+All local, no deploy concerns.
 
 **A1. Fix the screenshot path (B1) — ~30 min, highest value.**
 
@@ -839,15 +942,15 @@ focus + meta, atomic write via tmp + `os.replace`, loaded into memory on boot.
 - Add a `User-Agent` on `fetch_page` — some 403s are naked-client blocks.
 - Cap research wall time at ~40s so a slow crawl never stalls a live thread.
 
-**A5. Wire the router — ~20 min, Phase 2.**
+**A5. Wire the router — ~20 min, at Sync 1.**
 
-Against B's frozen signature. One dispatch block in `route_message`, one branch
+Against seam 1's frozen signature. One dispatch block in `route_message`, one branch
 per intent, each branch calling into `cards.*` and returning a string or a
 `(text, png_bytes)` pair. Keep `route_message`'s existing contract so
-`/simulate` and the existing tests keep working — Lane D drives rehearsals
-through it.
+`/simulate` and the existing tests keep working — the demo runbook drives
+rehearsals through it.
 
-**Lane A gate**
+**Dev 1, Phase 1 gate**
 ```bash
 pytest tests/ -q                                     # all green, 285+
 curl -s localhost:8000/health | jq                   # runware/linq true, FileStore
@@ -857,10 +960,12 @@ python -m app.llm --vision tests/fixtures/chat1.png  # prints extracted price
 
 ---
 
-### Lane B — Agent surface (`lane/agent`)
+### Dev 2 — intent, cards & the message surface (`lane/agent`)
 
-Owner: best writer on the team. This lane is *product*, and it never imports
-`main`. Not blocked by A — build against fixture `Deal` objects loaded from JSON.
+Owner: best writer on the team. This half is *product*. In Phase 1 it never
+imports `main` and is blocked by nothing — build against a fixture `Deal` loaded
+from JSON. In Phase 2 it takes `main.py` and owns every call site that touches
+the thread.
 
 **B1. `app/intent.py`** — §4.1 exactly. Pure, no I/O, no LLM, fully unit-tested.
 The test that matters most: **every message containing a price classifies as
@@ -885,26 +990,28 @@ Onboarding:
   Text me a link to start. Say "help" for the rest.
 ```
 
-**B4. `app/render.py`** — the PNG cards per §4.6, matplotlib `Agg`. Only after
-B1–B3 are green.
+**B4. `app/render.py`** *(Phase 2)* — the PNG cards per §4.6, matplotlib `Agg`.
+Only after B1–B3 are green.
 
-**B5. Explanations on demand.** The `❓` tapback and the word "why" both hit one
+**B5. Explanations on demand** *(Phase 2)*. The `❓` tapback and the word "why" both hit one
 function: turn the current `snapshot` into three sentences of plain English
 about the floor estimate, its spread, and `p_accept`. `rationale` from
 `engine.py:556` is already most of this — extend it, don't duplicate it.
 
-**Lane B gate**: all four cards render from fixtures, including the null states
+**Dev 2, Phase 1 gate**: all four cards render from fixtures, including the null states
 (`snapshot is None`, `research is None`) that a judge sees in the first thirty
 seconds; intent table tests green; every card pasted into a real thread and
 visually checked on an actual iPhone.
 
 ---
 
-### Lane C — Linq maximalism + ops (`lane/linq`)
+### Phase 2 — Linq maximalism + ops (split across both)
 
-Owner: whoever likes shell. Owns `app/linq.py`, `.env`, `scripts/`, `Makefile`.
+**C1 is Dev 2** (`app/linq.py` + the `main.py` call sites). **C2–C5 are Dev 1**
+(`.env`, `scripts/`, `Makefile`) — deliberately disjoint files, so the ownership
+flip at Sync 1 holds without anyone having to remember it.
 
-**C1. Client surface** — §4.7. Every decorative call (`react`, `typing`,
+**C1. Client surface** *(Dev 2)* — §4.7. Every decorative call (`react`, `typing`,
 `effect`) is fire-and-forget: wrapped in `try/except: pass`, never awaited on the
 critical path, never able to fail a turn. Attachments and sends are not
 decorative and do surface errors.
@@ -941,7 +1048,7 @@ demo:       ; scripts/demo_arc.sh
 | `RESEARCH_MODE` | `live` (flip to `mock` if the network dies) |
 | `CLOSER_STORE_PATH` | `./data` |
 | `LINQ_WEBHOOK_SECRET` | set it — a configured secret auto-enables HMAC (`linq.py:98`) |
-| `DEMO_MODE` | `false` until Phase 3 |
+| `DEMO_MODE` | `false` until Sync 2 |
 
 Delete `CLERK_*`, `DEV_AUTH`, `CORS_ORIGINS`, and `UPSTASH_*` from `.env` (leave
 them commented in `.env.example` — the code paths still exist and still pass
@@ -954,15 +1061,16 @@ silently repoints anything that relies on the default — no error, wrong line.
 Add a `make check-profile` that asserts `linq whoami --profile closer` returns
 `+12052611117` and wire it into `dev`.
 
-**Lane C gate**: `make dev` from a clean shell brings up both processes; killing
-the listener auto-restarts it inside 5s; a typing indicator, a tapback, and a
-confetti effect all visibly land on a real iPhone; `make preflight` is green.
+**Phase 2 ops gate (Dev 1)**: `make dev` from a clean shell brings up both
+processes; killing the listener auto-restarts it inside 5s; `make preflight` is
+green. **Phase 2 surface gate (Dev 2)**: a typing indicator, a tapback, and a
+confetti effect all visibly land on a real iPhone, and `card` returns a PNG.
 
 ---
 
-### Lane D — Demo (`lane/demo`)
+### Dev 1 — demo (Phase 2, `lane/engine`)
 
-Owner: whoever presents. Touches no shared source.
+Whoever presents should own this. Touches no shared source.
 
 **D1. Marcus arc.** `~/seller-agent` (port 8787, `+12054909563`): 2008 Camry LE
 listed $6,400, true value ~$4,200, hidden walk-away $4,750. He anchors, concedes
@@ -977,8 +1085,9 @@ feature and it needs two deals on screen. Pre-seed a 2016 Civic mid-research so
 "deals" returns a list with real variety in state.
 
 **D3. Fixtures.** Three real chat screenshots — Facebook Marketplace, Craigslist
-email, plain iMessage — in `closer/tests/fixtures/`. Lane A's vision tests use
-them and the demo has a guaranteed-good image to send.
+email, plain iMessage — in `closer/tests/fixtures/`. A1's vision tests use them
+and the demo has a guaranteed-good image to send. **Do this in Phase 0** — Dev 1
+needs one at hour zero.
 
 **D4. `DEMO.md`** — the runbook: exact commands, exact messages to send in order,
 what should appear after each, and the three recoveries (listener restart,
@@ -991,7 +1100,7 @@ the strongest possible close.
 
 **D6. Optional landing page** (§1) — only after D1–D5 are green.
 
-**Lane D gate**: a full negotiation runs on a real phone, mirrored to a screen,
+**Demo gate**: a full negotiation runs on a real phone, mirrored to a screen,
 with a second deal switched to and back, in under four minutes, driven by someone
 who did not write the code.
 
@@ -1001,7 +1110,7 @@ who did not write the code.
 
 | Risk | Blast radius | Mitigation |
 |---|---|---|
-| `linq webhooks listen` dies | **Product is silently dead.** No error, texts vanish | C2: supervisor + `/health/inbound` + preflight. Rehearse the kill in Phase 3 |
+| `linq webhooks listen` dies | **Product is silently dead.** No error, texts vanish | C2: supervisor + `/health/inbound` + preflight. Rehearse the kill in Sync 2 |
 | Laptop sleeps / wifi drops | Backend gone | `caffeinate -dimsu make dev`; hotspot backup; `mock` research needs no network |
 | Intent router misreads a seller message as a command | Negotiation turn lost mid-demo | §4.1 price-beats-command rule; 40+ case table test; default is always `RELAY` |
 | Linq reaction/typing/attachment REST shapes differ from the CLI | §5.1–5.5 don't ship | Phase 0 probes them *before* lane work; CLI subprocess is the fallback; all of it is decoration wrapped in `try/except` |
@@ -1009,7 +1118,9 @@ who did not write the code.
 | Listing sites 403 the research agent | "$0 fair value" on stage | A4 fallback asks for the asking price; `mock` mode as the floor |
 | Runware credits exhausted | No classify/draft/vision | Rules classifier (`llm.py:150`) + heuristic drafts already exist and are tested — prove that path once, deliberately, with the key unset |
 | Shared Line 20-contact cap | Can't onboard more judges | Remove test contacts before demoing; a paid dedicated line is available from the Linq dashboard if it matters |
-| Two people edit `main.py` | Merge hell at hour 5 | §4.8 ownership table; B's router is a pure function A wires in |
+| Both devs edit `main.py` | Merge hell at hour 5 | §4.8: exactly one owner per file per phase. Dev 1 in Phase 1, Dev 2 in Phase 2, never both |
+| The Sync-1 ownership flip is forgotten | Dev 1 keeps editing `main.py` into Phase 2 | Dev 1's Phase-2 scope is `research.py` + `scripts/` + `DEMO.md` — disjoint by construction, so it holds without discipline |
+| One dev finishes their phase well ahead of the other | The fast one starts Phase 2 early and breaks the seam | Gates are commands, not opinions. Finish early → write tests, or pair on the other half's gate. Do not start Phase 2 before Sync 1 |
 | Unicode cards misalign on someone else's phone | Looks broken on the judge's device | §4.6 typography rule: no space-aligned columns, ever. Verify on a second physical phone in Phase 1 |
 
 ---
