@@ -22,6 +22,15 @@ from pydantic import BaseModel, Field
 
 from app.engine import BeliefState, Signals
 
+# Which price caps our offers and gates the WALK rule. The engine defaults to
+# "R" (the walk-away target), which is spec-literal but walks on turn one of a
+# real listing: the seller's opening anchor sits far above an aggressive R, so
+# P(floor <= R) is under the walk threshold before we have countered even once.
+# "V" lets offers run to expert fair value, which is the behaviour the coach
+# flow is built around — counter, converge, then hold. Decision-layer only; the
+# posterior over the seller's floor is identical either way.
+OFFER_CEILING = "V"
+
 
 class DealState(str, Enum):
     AWAITING_LINK = "AWAITING_LINK"
@@ -87,7 +96,7 @@ class Deal(BaseModel):
         """Reconstruct the live posterior by replaying the signal log."""
         if self.asking is None or self.R is None or self.V is None:
             return None
-        b = BeliefState(self.asking, self.R, self.V)
+        b = BeliefState(self.asking, self.R, self.V, offer_ceiling=OFFER_CEILING)
         for s in self.signals_log:
             b.update(Signals(**s))
         return b

@@ -84,9 +84,26 @@ def _expert_for_draft(deal: Deal) -> dict:
 
 
 def _snapshot(deal: Deal, rec: dict, coach: str) -> dict:
-    return {**rec, "asking": deal.asking, "R": deal.R, "V": deal.V,
+    return {**rec, "floor_map": _floor_map(rec),
+            "asking": deal.asking, "R": deal.R, "V": deal.V,
             "last_seller_price": deal.last_seller_price,
             "last_user_offer": deal.last_user_offer, "coach_message": coach}
+
+
+def _floor_map(rec: dict) -> dict:
+    """Reshape the engine's belief curve into the dashboard's chart contract.
+
+    The engine returns the posterior and its support as two flat lists
+    (`floor_map`, `floors`); static/dashboard.html reads `floor_map.floors` and
+    `floor_map.p`. Adapting here keeps the engine free of view concerns and the
+    chart free of engine internals. Rounded because the snapshot is persisted
+    and replayed to the browser on every poll.
+    """
+    fm = rec.get("floor_map")
+    if isinstance(fm, dict):                      # already in chart shape
+        return fm
+    return {"floors": [round(float(x), 2) for x in (rec.get("floors") or [])],
+            "p": [round(float(x), 6) for x in (fm or [])]}
 
 
 def _detect_outcome(text: Optional[str], asking: float) -> Optional[str]:
