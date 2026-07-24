@@ -413,11 +413,15 @@ async def health():
 
 
 @app.post("/tasks/run-research")
-async def run_pending_research(x_cron_secret: Optional[str] = Header(default=None)):
+async def run_pending_research(x_cron_secret: Optional[str] = Header(default=None),
+                               authorization: Optional[str] = Header(default=None)):
     """Serverless fallback: drain AWAITING_RESEARCH deals whose background thread
-    didn't run (e.g. a frozen Vercel function). Idempotent; only picks up stale deals."""
-    if CRON_SECRET and x_cron_secret != CRON_SECRET:
-        raise HTTPException(status_code=401, detail="bad cron secret")
+    didn't run (e.g. a frozen Vercel function). Idempotent; only picks up stale deals.
+    Auth accepts `X-Cron-Secret: <s>` or Vercel Cron's `Authorization: Bearer <s>`."""
+    if CRON_SECRET:
+        bearer = (authorization or "").removeprefix("Bearer ").strip()
+        if x_cron_secret != CRON_SECRET and bearer != CRON_SECRET:
+            raise HTTPException(status_code=401, detail="bad cron secret")
     picked = []
     for deal in STORE.list_pending_research():
         if time.time() - deal.updated_at > 45 and deal.listing_link:
