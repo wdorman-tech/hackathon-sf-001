@@ -10,21 +10,31 @@ the expected-value-optimal counter. **No LLM ever estimates the floor** — the 
 only translates language ↔ structure on both ends of the math. That's the point: the
 game theory is real, deterministic, and inspectable.
 
+**There is no dashboard, and no website.** Closer is a phone number. Starting a
+deal, switching between deals, seeing the belief curve, and reading your lifetime
+savings all happen as messages in the thread. Your phone number is the account —
+Linq's webhook hands us the sender handle, so there is no signup, no login, and
+no session to expire.
+
 ```
-        iMessage (Linq)                          Dashboard (Vercel + Clerk)
-   you ───────────────► Closer backend (local, FastAPI) ◄─────── your teammate's UI
-        ▲                    │  ├─ engine.py     pure-numpy Bayesian floor belief
-        │  coach reply       │  ├─ research.py   agentic valuation (web search + cite)
-        └────────────────────┘  ├─ llm.py        Runware (Claude): classify / draft / vision
-                                └─ store.py      per-user deals (Clerk user → many deals)
+        iMessage (Linq)              +12052611117
+   you ───────────────► Closer backend (local, FastAPI)
+        ▲                    │  ├─ intent.py    what did this message mean?
+        │  coach reply       │  ├─ engine.py    pure-numpy Bayesian floor belief
+        │  + cards           │  ├─ research.py  agentic valuation (web search + cite)
+        │                    │  ├─ llm.py       Runware (Claude): classify / draft / vision
+        └────────────────────┘  ├─ cards.py     deal / list / stats cards, back into the thread
+                                └─ store.py     per-phone deals + which one is in focus
 ```
 
 - **Backend**: Python 3.12+, FastAPI, numpy. Runs **locally** (long-running uvicorn).
+  Nothing is deployed; nothing needs a public URL.
 - **LLM**: [Runware](https://runware.ai) native task API (`anthropic:claude@sonnet-4.6`)
   — one model for text classify/draft **and** screenshot vision.
-- **Messaging**: [Linq](https://linqapp.com) Partner API v3 (real iMessage).
+- **Messaging**: [Linq](https://linqapp.com) Partner API v3 (real iMessage) — send,
+  typing indicators, tapbacks in both directions, message effects, attachments.
 - **Valuation**: Closer's own bounded research agent (web search + page reads, cited).
-- **Dashboard**: separate app on **Vercel**, users via **Clerk**, calls this backend's API.
+- **Auth**: the phone number on the inbound webhook. `user_id = "phone:+1205…"`.
 
 Everything degrades gracefully: **with no API keys at all the whole app still runs
 end-to-end** (rules-based classifier + mock research), so a dead network never kills a demo.
@@ -42,8 +52,9 @@ pytest tests/                   # engine tests (should be green)
 uvicorn app.main:app --reload --port 8000
 ```
 
-Open the local dashboard at <http://localhost:8000/> and the API at
-<http://localhost:8000/health>.
+Check it with <http://localhost:8000/health>. `static/dashboard.html` still serves
+at `/` as a developer's-eye view of one deal's belief curve — it is a debugging
+aid, not the product, and no user ever opens it.
 
 ### Keys (all optional for the demo)
 
@@ -51,7 +62,7 @@ Open the local dashboard at <http://localhost:8000/> and the API at
 |---|---|---|
 | `RUNWARE_API_KEY` | real Claude classify/draft/vision + live research | rules classifier + mock/heuristic research |
 | `LINQ_API_KEY` | real iMessage send/receive | `/simulate` keyboard flow still works |
-| `CLERK_ISSUER` | real per-user auth on the dashboard API | `DEV_AUTH=true` dev user |
+| `CLOSER_STORE_PATH` | deals survive a restart (`FileStore`) | in-process `MemoryStore` |
 
 `RUNWARE_MODEL` defaults to `anthropic:claude@sonnet-4.6`. Confirm exact model ids
 with `python -m app.llm --models` (or `--smoke` for a live ping) once a key is set.
@@ -67,11 +78,11 @@ Set `RESEARCH_MODE=mock` in `.env` for an instant canned valuation of the demo c
 # 1. send the listing link → Closer researches it → NEGOTIATING
 curl -s localhost:8000/simulate -H 'content-type: application/json' \
   -d '{"text":"https://example.com/2019-mazda-cx-5"}' | jq
-#    → returns {"deal_id": "...", ...}. Open the chart at  /?deal=<deal_id>
+#    → returns {"deal_id": "...", ...}
 
 DEAL=<paste deal_id>
 
-# 2. the seller arc (watch the belief curve on the dashboard reshape each turn)
+# 2. the seller arc — each response carries the reshaped belief in `snapshot`
 curl -s localhost:8000/simulate -d "{\"deal_id\":\"$DEAL\",\"text\":\"I could do 15,200.\"}"
 curl -s localhost:8000/simulate -d "{\"deal_id\":\"$DEAL\",\"text\":\"Someone's coming to see it tomorrow, 15 is the lowest I'll go.\"}"
 curl -s localhost:8000/simulate -d "{\"deal_id\":\"$DEAL\",\"text\":\"You're killing me. 14,000 and it's yours, final.\"}"
@@ -85,56 +96,80 @@ curl -s localhost:8000/simulate -d "{\"deal_id\":\"$DEAL\",\"text\":\"fine, deal
 | "I could do **15,200**." | COUNTER, holds low | shifts **up**, stays **wide** (one anchor tells us little) |
 | "Someone's coming tomorrow, **15** is the lowest." | **HOLD** — flags the bluff | **barely moves** — the bluff called by math |
 | "You're killing me. **14,000**, final." | COUNTER near the split | **collapses to a spike** near ~$13k |
-| "fine, deal" | **CLOSED** banner | ~**$2,800 under ask** |
+| "fine, deal" | **CLOSED** + confetti | ~**$2,800 under ask** |
+
+That second row is the pitch. The deal card renders it as a flat segment in the
+floor line with the seller's own words underneath — the bluff, called by math.
 
 For a warm-start after any crash: `DEMO_MODE=true` pre-seeds a deal mid-negotiation,
 or `POST /demo/seed` mints one on demand.
 
 ---
 
-## Running the real iMessage + dashboard stack
+## Running the real iMessage stack
 
-1. **Backend, local:** `uvicorn app.main:app --port 8000`
-2. **Inbound iMessage** (no tunnel needed): the Linq CLI streams and forwards to you —
-   ```bash
-   export LINQ_API_KEY="$(linq tokens show | tr -d '[:space:]')"
-   linq webhooks listen --forward-to http://localhost:8000/webhooks/linq
-   ```
-   (On a Shared Line the contact must text `+12052611117` first — inbound-first. Every
-   Closer reply goes back to someone who just texted us, so replies always deliver.)
-3. **Expose the API to the Vercel dashboard** (the dashboard is public, the backend is
-   local, so it needs a public URL):
-   ```bash
-   cloudflared tunnel --url http://localhost:8000      # or: ngrok http 8000
-   ```
-   Point the dashboard's API base at the tunnel URL, and set `CORS_ORIGINS` to the
-   dashboard's Vercel domain in `.env`.
-4. **Auth:** the dashboard signs users in with **Clerk** and sends the session JWT as
-   `Authorization: Bearer <token>`; the backend verifies it (`app/auth.py`) and scopes
-   every deal to that Clerk user. Set `CLERK_ISSUER` (+ optionally `CLERK_AUTHORIZED_PARTIES`).
+Two processes on one laptop. **No tunnel, no public URL, no inbound port** — the
+Linq CLI holds an outbound connection and forwards inbound events to localhost.
+
+```bash
+# 1. backend
+cd closer && uvicorn app.main:app --port 8000
+
+# 2. inbound iMessage
+export LINQ_API_KEY="$(linq tokens show --profile closer | tr -d '[:space:]')"
+linq webhooks listen --profile closer \
+     --forward-to http://localhost:8000/webhooks/linq
+```
+
+On a Shared Line the contact must text `+12052611117` first — inbound-first. That
+is not a limitation here, it *is* the signup flow: the first inbound text creates
+the account. `linq contacts add <number> --profile closer` prints a share link
+that opens Messages with a pre-filled draft (and renders a QR code on desktop),
+so onboarding someone is one camera scan and one tap.
+
+**If `linq webhooks listen` dies, the product is silently dead** — no error, texts
+just vanish. Supervise it, and watch `/health/inbound`.
 
 ---
 
-## API
+## What a user can say
 
-Dashboard endpoints require a Clerk bearer token (or, in dev, `X-Dev-User: <id>`).
+Every capability is a message. The router's hard rule: **a message containing a
+price is always a seller relay, never a command.**
+
+| Say | Get |
+|---|---|
+| a listing link | new deal, research, valuation card; focus moves to it |
+| anything the seller said (typed, pasted, or a screenshot) | one negotiation turn — the exact number to send back |
+| `deals` | numbered list of every deal, `▶` on the focused one |
+| `2` / `switch to the Civic` | focus moves; that deal's card comes back |
+| `card` / `where are we` | deal card: floor estimate turn by turn, confidence, next offer |
+| `stats` | lifetime savings across every closed deal |
+| `undo` / `ignore that` | drop the last seller turn, replay the belief, re-recommend |
+| `we have a deal` | CLOSED, confetti, dollars under ask |
+| `I walked` | WALKED, logged |
+| `help` | the list above |
+
+---
+
+## HTTP API (local only — testing, not product)
+
+These are how you drive a rehearsal without a phone. Bind to `127.0.0.1`.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/api/deals` | create a deal `{listing_link?, phone?, title?, asking?}` → kicks research |
-| `GET` | `/api/deals` | list the signed-in user's deals |
-| `GET` | `/api/deals/{id}` | deal detail (valuation, belief snapshot, feed, research trace) |
-| `POST` | `/api/deals/{id}/link` | attach a listing link + start research |
-| `POST` | `/api/deals/{id}/messages` | relay a seller message `{text?, image_url?}` → coach reply |
-| `DELETE` | `/api/deals/{id}` | delete a deal |
-| `POST` | `/webhooks/linq` | Linq inbound (`message.received`) — routed by deal state |
+| `POST` | `/webhooks/linq` | Linq inbound (`message.received`) — the real entry point |
 | `POST` | `/simulate` | keyboard demo `{text, deal_id?, phone?}` — no auth, no phone |
-| `GET` | `/state?deal_id=…` | belief curve + feed for the dashboard (polled ~1s) |
-| `GET` | `/health` | store backend, Runware/Linq/Clerk availability, research mode |
+| `GET` | `/health` | store backend, Runware/Linq availability, research mode |
+| `GET` | `/health/inbound` | seconds since the last inbound webhook — is the listener alive? |
+| `GET` | `/state?deal_id=…` | belief curve + feed (feeds `static/dashboard.html`) |
+| `POST` | `/api/deals` … | per-user CRUD, kept for scripted testing |
 
-The negotiation snapshot the dashboard renders (under `deal.snapshot`):
+The negotiation snapshot the cards render (under `deal.snapshot`):
 `action` (COUNTER/HOLD/WALK/ACCEPT), `offer`, `p_accept`, `zopa`, `floor_point_est`,
-`floor_std`, `floor_map {floors, p}`, plus `R` (walk-away) and `V` (fair value) lines.
+`floor_std`, `floor_map {floors, p}`, plus `R` (walk-away) and `V` (fair value).
+`deal.trajectory()` derives the per-turn floor history the deal card plots — it
+reads straight off the feed, so nothing extra is persisted.
 
 ---
 
@@ -154,6 +189,11 @@ over legal offers, walks when a deal above fair value looks forced, and holds th
 
 ## Env reference
 
-See `.env.example` for the full list with comments (Runware, Linq, Research, Clerk,
-Storage). Storage defaults to in-process `MemoryStore`; set `UPSTASH_REDIS_REST_URL`
-+ `UPSTASH_REDIS_REST_TOKEN` for durability across restarts.
+See `.env.example` for the full list with comments (Runware, Linq, Research,
+Storage). Storage defaults to in-process `MemoryStore` — set `CLOSER_STORE_PATH=./data`
+so deals survive a restart, since the thread is the only place a user's history lives
+and they cannot re-derive it.
+
+The Clerk and Upstash variables are still read by `app/auth.py` and `app/store.py`
+and still pass their tests, but nothing in the product configures them: there is no
+browser to sign into, and the backend is a single long-running local process.

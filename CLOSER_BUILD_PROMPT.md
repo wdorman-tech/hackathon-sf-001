@@ -1,5 +1,16 @@
 # CLOSER — Build Prompt for Claude Code
 
+> **⚠️ Superseded in part. Read `update_1.md` first.**
+>
+> This document built Phases 1–3 and remains accurate for the engine, the research
+> agent, the Runware integration, and the deal state machine. **Its frontend story is
+> dead.** There is no dashboard, no Next.js app, no Clerk, and no tunnel. Every
+> reference below to "the dashboard", "the chart", "streams to the browser", or
+> "Clerk user" now means: **a rendered card sent back into the iMessage thread**, owned
+> by a user identified solely by the phone number on Linq's inbound webhook.
+>
+> Where the two disagree, `update_1.md` wins.
+
 You are building **Closer**, a hackathon MVP: an AI negotiation coach that lives in iMessage.
 Total budget: **under 4 hours**. Follow the phases in order. Commit at the end of every phase.
 Bias every decision toward: works end-to-end for a live demo > clean > complete.

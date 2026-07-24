@@ -3,6 +3,27 @@
 Linq is the messaging layer we use to send and receive iMessage (with RCS + SMS
 fallback) from code. CLI + REST API over real Apple infrastructure.
 
+**For Closer, Linq is not a channel — it is the entire product surface.** There is
+no dashboard and no website; every capability ships as a message. So the
+affordances below are load-bearing features, not decoration:
+
+| Affordance | What Closer does with it |
+|---|---|
+| `sender_handle.handle` on inbound | **The auth system.** `user_id = "phone:+1205…"`. No signup, no login. |
+| `webhooks listen --forward-to` | Inbound over an outbound connection — **no tunnel, no public URL, no inbound port** |
+| `chats typing` | Bracket research (~30s) and every LLM turn, so waiting reads as thinking |
+| `messages react` (outbound) | Sub-second acknowledgement before inference runs: 👍 logged, ❗ bluff spotted, ❓ couldn't parse |
+| tapbacks (inbound) | A two-tap negotiation loop: 👍 "sent it", 👎 "different number", ❓ "explain the math" |
+| `messages send --effect` | `confetti` on close, `fireworks` on a new best, `slam` on a walk. Three per demo, no more. |
+| `attachments upload` | The deal card as a real chart — the seller's floor collapsing turn by turn |
+| `contacts add` share link / QR | **The signup flow.** Scan, tap send, you're a user. Also clears inbound-first. |
+
+Plan and exact build order: `update_1.md` §5 ("Linq, pushed to the max").
+
+Two limits that shape the design: a Shared Line caps at **20 contacts** (so, 20
+concurrent users), and it is **inbound-first** — which is not a limitation here,
+it is how accounts get created.
+
 ## TWO ACCOUNTS — read this first
 
 There are two separate Linq accounts on this machine, one per agent, so the two

@@ -2,17 +2,36 @@
 
 ## What we are doing
 
-<!-- FILL IN when the idea locks -->
-- **Project**: _TBD_
-- **One-liner**: _TBD_
-- **Target user**: _TBD_
-- **Core demo (the thing judges see work)**: _TBD_
-- **Stack**: _TBD_ (default lean: Next.js App Router, Runware for all AI inference, deploy on Vercel)
+- **Project**: **Closer** (`closer/`)
+- **One-liner**: An AI negotiation coach that lives in iMessage — text it a used-car
+  listing, it researches the real value, then tells you the exact number to counter
+  with and calls the seller's bluffs using a Bayesian model of their hidden floor.
+- **Target user**: anyone buying a car from a private party who does not want to
+  overpay and does not want to learn negotiation theory.
+- **Core demo (the thing judges see work)**: a real iMessage thread on a mirrored
+  phone. The seller claims three other buyers are coming Saturday; the belief curve
+  moves $9. The bluff, called by math, on screen.
+- **Stack**: FastAPI + numpy, local. Linq for iMessage. Runware for all AI inference.
+  **No frontend.** See `update_1.md`.
+
+## The product surface is iMessage. There is no dashboard.
+
+Everything a user can do is a message: start a deal, switch between deals, get a
+card showing how the seller's perceived price floor moved turn by turn, read
+lifetime savings, close, walk. Auth is the phone number on Linq's inbound webhook
+(`user_id = "phone:+1205…"`) — no signup, no login, no session.
+
+Consequences that shape every decision here: no Next.js app, no Vercel project on
+the critical path, no Clerk, **no tunnel and no public URL** (`linq webhooks listen
+--forward-to` reaches localhost over an outbound connection). Anything that would
+have been a screen is a message or a rendered card instead.
 
 ## Hackathon constraints
 
 - **Deadline-driven.** Working demo beats perfect architecture. But "working" means actually working end-to-end, not faked.
-- **Ship to a live URL.** Anything demoable should be deployable (Vercel preview) at any moment.
+- **The deliverable is a phone number, not a URL.** `+12052611117` must answer at
+  any moment. The optional exception is a one-page landing carrying the Linq
+  share-link QR code — never a dashboard.
 - **One clear happy path.** Nail the core flow before breadth.
 
 ## The other half of the demo lives outside this repo
@@ -57,11 +76,16 @@ writing ordinary OpenAI-style message lists.
 
 ## Working rules
 
-- Real integrations over mocks. If we need a store/payments/auth/DB/email, provision the real thing (Vercel Marketplace) — no UI-only stand-ins unless explicitly asked.
+- Real integrations over mocks. If we need a store/payments/DB/email, provision the real thing (Vercel Marketplace) — no UI-only stand-ins unless explicitly asked. Auth is the exception, and it is settled: the phone number is the account.
+- **Push Linq past plain text.** Typing indicators while research runs, tapbacks as
+  both acknowledgement and input, message effects on close/walk, rendered chart
+  attachments. `LINQ.md` §iMessage-native affordances is the inventory; `update_1.md` §5
+  is the plan.
 - **All AI inference goes through Runware** — text, vision, image, video, audio, 3D, one endpoint (`POST https://api.runware.ai/v1`, `Authorization: Bearer $RUNWARE_API_KEY`). Models are AIR ids, `creator:family@version` (e.g. `anthropic:claude@sonnet-4.6`); browse https://runware.ai/models. Native task API for anything with image inputs or JSON-schema output; the OpenAI-compatible `/v1/chat/completions` shim is text-only. Credits: https://runware.ai/wallet, code `YCSSHACKATHON`. No direct provider SDKs (`anthropic`, `openai`, `google-genai`) unless Runware genuinely can't do it.
 - Search before building. Reuse existing code and libs.
 - Test the core path before calling it done.
-- Keep a live URL green.
+- Keep the number answering. `linq webhooks listen` dying is a silent outage — texts
+  vanish with no error. Supervise it and watch `/health/inbound`.
 
 ## Remember when implementing
 
