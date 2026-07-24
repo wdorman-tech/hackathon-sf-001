@@ -36,6 +36,7 @@ from fastapi.responses import FileResponse, HTMLResponse  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
 from app import cards, demo, intent, linq, llm, render, research, runware  # noqa: E402
+from app import screenshot  # noqa: E402
 from app import store as store_mod  # noqa: E402
 from app.auth import DEV_USER_ID, clerk_enabled, require_user  # noqa: E402
 from app.state import Deal, DealState, user_id_for  # noqa: E402
@@ -76,6 +77,23 @@ app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS,
 def _find_url(text: Optional[str]) -> Optional[str]:
     m = URL_RE.search(text or "")
     return m.group(0) if m else None
+
+
+def _starts_a_deal(text: Optional[str], *, has_image: bool = False) -> bool:
+    """Does this message name a car we don't have a deal for yet?
+
+    True for a listing link and for a car described in words ("2008 Toyota
+    Camry LE, 128k, asking $6,400"). Kept in exactly one place because three
+    call sites have to agree on it — `_inbound_deal` picks the deal, the webhook
+    enforces the deal cap against it, and `intent.classify` routes on it. Two of
+    those disagreeing means a deal researched onto the wrong car.
+
+    An image never starts a deal on its own (§4.1 — an image is evidence about a
+    seller), unless it carries a link, which `intent.classify` handles itself.
+    """
+    if _find_url(text):
+        return True
+    return not has_image and intent.vehicle_description(text) is not None
 
 
 def _opening_offer(deal: Deal) -> float:
@@ -140,7 +158,7 @@ def _awaiting_asking(deal: Deal) -> bool:
 RESEARCH_TRACE_BUBBLES = 2
 
 
-def _do_research(deal_id: str, link: str) -> None:
+def _do_research(deal_id: str, link: str, description: str = "") -> None:
     deal = STORE.get_deal(deal_id)
     if not deal or deal.state != DealState.AWAITING_RESEARCH:
         return
@@ -161,7 +179,8 @@ def _do_research(deal_id: str, link: str) -> None:
             _send_now(deal.phone, f"🔎 {note}")
 
     with linq.typing_while(deal.chat_id):
-        payload = research.run_research(link, asking=deal.asking, on_step=on_step)
+        payload = research.run_research(link, asking=deal.asking,
+                                        description=description, on_step=on_step)
     d = STORE.get_deal(deal_id)
     if not d or d.state != DealState.AWAITING_RESEARCH:
         return
@@ -179,55 +198,95 @@ def _do_research(deal_id: str, link: str) -> None:
             pass
 
 
-def _start_research(deal: Deal, link: str, *, background: bool) -> None:
-    deal.listing_link = link
+def _start_research(deal: Deal, link: Optional[str], *, background: bool,
+                    description: str = "") -> None:
+    """Kick research off for a deal identified by a link, a description, or both.
+
+    Exactly one of the two is the norm: a link when the buyer pasted one, a
+    description when they just told us what the car is (§4.1 NEW). The deal
+    records whichever it got, and `_real_deals` counts either as a real deal.
+    """
+    deal.listing_link = link or None
+    deal.listing_desc = (description or "").strip() or None
     deal.state = DealState.AWAITING_RESEARCH
     deal.research_steps = []
     STORE.save_deal(deal)
+    args = (deal.id, link or "", deal.listing_desc or "")
     if background:
-        threading.Thread(target=_do_research, args=(deal.id, link), daemon=True).start()
+        threading.Thread(target=_do_research, args=args, daemon=True).start()
     else:
-        _do_research(deal.id, link)
+        _do_research(*args)
 
 
 # ── one negotiation turn (seller message → coach message) ────────────────────
-def _process_seller_turn(deal: Deal, seller_text: Optional[str],
-                         image_ref: Optional[str]) -> Optional[str]:
+def _process_seller_lines(deal: Deal, lines: list[str]) -> Optional[str]:
+    """Replay one or more seller messages and return the coach's reply.
+
+    A typed relay is one line. A screenshot of a thread is several, and each of
+    them is a separate thing the seller did — so each gets its own classify, its
+    own belief update and its own point on the curve. Collapsing them into one
+    blob (what the first cut did) threw away the shape of the concession, which
+    is the only thing the posterior actually reads.
+
+    The user gets ONE coach message regardless: advice on a message they have
+    already read the answer to is noise. Intermediate turns are logged with
+    `cards.replayed_turn`, whose text is derived from the recommendation and
+    never drafted — see that function for why that matters.
+
+    Returns None when there is nothing to replay or no belief to replay it into
+    (research hasn't landed), which callers turn into `cards.unparsed()`.
+    """
     asking = deal.asking or 16000.0
-
-    if image_ref and not seller_text:
-        try:
-            ex = llm.extract_from_screenshot(image_ref)
-            msgs = ex.get("seller_messages") or []
-            seller_text = " ".join(msgs[-2:]).strip() or None
-            if not seller_text and ex.get("latest_seller_price"):
-                seller_text = f"They said {int(ex['latest_seller_price'])}."
-        except Exception:
-            seller_text = None
-    if not seller_text:
+    lines = [ln.strip() for ln in lines if ln and ln.strip()]
+    if not lines or deal.belief() is None:
         return None
 
-    sig = llm.classify_seller_message(seller_text, deal.last_seller_price, asking)
-    deal.signals_log.append(sig.as_dict())
-    if sig.seller_price is not None:
-        deal.last_seller_price = sig.seller_price
+    coach = ""
+    rec: dict = {}
+    for i, line in enumerate(lines):
+        sig = llm.classify_seller_message(line, deal.last_seller_price, asking)
+        deal.signals_log.append(sig.as_dict())
+        if sig.seller_price is not None:
+            deal.last_seller_price = sig.seller_price
 
-    belief = deal.belief()
-    if belief is None:
-        return None
-    rec = belief.recommend(last_user_offer=_opening_offer(deal),
-                           last_seller_price=deal.last_seller_price)
-    coach = llm.draft_coach_message(
-        rec, sig, _expert_for_draft(deal),
-        {"last_seller_price": deal.last_seller_price, "last_user_offer": deal.last_user_offer})
+        belief = deal.belief()
+        if belief is None:                         # pragma: no cover - defensive
+            return None
+        rec = belief.recommend(last_user_offer=_opening_offer(deal),
+                               last_seller_price=deal.last_seller_price)
+        if i == len(lines) - 1:
+            coach = llm.draft_coach_message(
+                rec, sig, _expert_for_draft(deal),
+                {"last_seller_price": deal.last_seller_price,
+                 "last_user_offer": deal.last_user_offer})
+        else:
+            coach = cards.replayed_turn(rec)
 
-    if rec["action"] == "COUNTER":
-        deal.last_user_offer = rec["offer"]        # thread the user's next offer forward
+        if rec["action"] == "COUNTER":
+            deal.last_user_offer = rec["offer"]    # thread the next offer forward
 
-    deal.log_turn("seller", seller_text, signals=sig.as_dict())
-    deal.log_turn("closer", coach, recommendation=rec)
+        deal.log_turn("seller", line, signals=sig.as_dict())
+        deal.log_turn("closer", coach, recommendation=rec)
+
     deal.snapshot = _snapshot(deal, rec, coach)
     return coach
+
+
+def _process_seller_turn(deal: Deal, seller_text: Optional[str],
+                         image_ref: Optional[str]) -> Optional[str]:
+    """Single-message compatibility shim over `_process_seller_lines`.
+
+    Kept because `/api/deals/{id}/messages` and the demo runbook still hand us
+    one text and at most one image ref.
+    """
+    if image_ref:
+        read = screenshot.read([image_ref], caption=seller_text,
+                               seen=deal.seen_screenshot_lines)
+        if read.has_new_lines():
+            deal.seen_screenshot_lines = screenshot.remember(
+                deal.seen_screenshot_lines, read.fingerprints())
+            return _process_seller_lines(deal, read.seller_lines)
+    return _process_seller_lines(deal, [seller_text] if seller_text else [])
 
 
 # ── UNDO (§4.1) ──────────────────────────────────────────────────────────────
@@ -283,7 +342,8 @@ def _real_deals(user_id: str) -> list[Deal]:
     a different car depending on which deal you last touched is a trap in a
     medium with no undo — "1" is your first deal, permanently.
     """
-    deals = [d for d in STORE.list_deals(user_id) if d.listing_link or d.feed]
+    deals = [d for d in STORE.list_deals(user_id)
+             if d.listing_link or d.listing_desc or d.feed]
     return sorted(deals, key=lambda d: d.created_at)
 
 
@@ -305,19 +365,26 @@ def _switch_pool(user_id: str, meta: dict) -> list[Deal]:
 
 
 def _start_new_deal(deal: Deal, url: Optional[str], *, parked: Optional[Deal],
-                    research_bg: bool) -> tuple[str, Optional[str], Optional[list]]:
+                    research_bg: bool,
+                    description: str = "") -> tuple[str, Optional[str], Optional[list]]:
     """A listing link ALWAYS starts a deal and takes focus (§7 A2).
+
+    So does a car the buyer described in words but could not link — the research
+    agent values either (`research.run_research`), so the grammar treats them the
+    same. `url` and `description` are the two ways to name a car; at least one
+    must be present or there is nothing to research.
 
     The webhook path has already done this in `_inbound_deal` and hands the new
     shell straight through; every other caller (`/simulate`, the demo runbook)
     arrives with a deal that may already be running, so the split happens here
     too. One rule, two entry points, no way to fold a link into a live deal.
     """
-    if not url:
+    description = (description or "").strip()
+    if not url and not description:
         return cards.not_negotiating(deal), None, None
 
     target = deal
-    if deal.listing_link or deal.state is not DealState.AWAITING_LINK:
+    if deal.listing_link or deal.listing_desc or deal.state is not DealState.AWAITING_LINK:
         parked = parked or (deal if deal.is_active() else None)
         target = _new_deal(deal.user_id, deal.chat_id, deal.phone)
     else:
@@ -328,17 +395,166 @@ def _start_new_deal(deal: Deal, url: Optional[str], *, parked: Optional[Deal],
     # back, so anything saved from this stale reference afterwards silently
     # overwrites it. Mock research finishes in microseconds and loses that race
     # every time; live research loses it whenever a page is cached.
-    msg = cards.deal_parked(target, parked) if parked is not None else cards.research_started(url)
+    msg = (cards.deal_parked(target, parked) if parked is not None
+           else cards.research_started(url, description=description))
     target.log_turn("closer", msg)
     STORE.save_deal(target)
-    _start_research(target, url, background=research_bg)
+    _start_research(target, url, background=research_bg, description=description)
     return msg, None, None
+
+
+def _asking_from_text(text: Optional[str]) -> Optional[float]:
+    """The price in a reply to "what are they asking?" (§7 A4).
+
+    `intent.parse_price` covers everything with three or more digits. The gap it
+    leaves is the answer people actually send — "6", "6.4" — which the grammar
+    reads as thousands everywhere else, so it is read as thousands here too.
+    """
+    price = intent.parse_price(text)
+    if price is not None:
+        return price
+    m = re.fullmatch(r"\$?\s*(\d{1,2}(?:\.\d+)?)\s*[kK]?", (text or "").strip())
+    return float(m.group(1)) * 1000 if m else None
+
+
+def _unblock_with_asking(deal: Deal, asking: Optional[float]) -> bool:
+    """Turn a `blocked` deal into a live one using an asking price (§7 A4).
+
+    `research.recompute_with_asking` has always existed for this; until now
+    nothing called it, so a 403'd listing asked "what are they asking?" and then
+    had no way to use the answer. Returns False when there is nothing to unblock
+    or the number is not a plausible price.
+    """
+    if not asking or asking <= 0 or not _awaiting_asking(deal):
+        return False
+    payload = research.recompute_with_asking(deal.research or {}, float(asking))
+    val = research.to_valuation(payload, float(asking))
+    deal.research = payload
+    deal.asking, deal.V, deal.R = val["asking"], val["V"], val["R"]
+    deal.state = DealState.NEGOTIATING
+    STORE.save_deal(deal)
+    return True
+
+
+def _seed_deal_from_screenshot(deal: Deal, read: "screenshot.ScreenshotRead") -> bool:
+    """Start a deal from a screenshot when there is no listing link to research.
+
+    The honest cheap path: a price and a car name off the image, run through the
+    same haircut §7 A4 uses when a listing 403s. `cards.screenshot_started_deal`
+    says out loud that this is a rule of thumb rather than research, and a link
+    sent later still starts a proper deal.
+    """
+    asking = read.price_hint()
+    if not asking or asking <= 0:
+        return False
+    payload = research.valuation_from_asking(
+        float(asking), title=read.title,
+        source="your screenshot" if read.kind == "chat" else "the listing screenshot")
+    val = research.to_valuation(payload, float(asking))
+    deal.research = payload
+    deal.asking, deal.V, deal.R = val["asking"], val["V"], val["R"]
+    deal.title = read.title or _title_from(payload) or deal.title
+    deal.state = DealState.NEGOTIATING
+    STORE.save_deal(deal)
+    return True
+
+
+def _relay_screenshot(deal: Deal, caption: Optional[str],
+                      media: list[str]) -> tuple[str, Optional[str], None]:
+    """A screenshot of the chat with the seller — the §7 A1 path.
+
+    Ladder, strictly in this order:
+
+      1. Read every image. If none of them read, fall back to the caption as a
+         typed relay — "he said 5400 [photo]" must still work when the photo is
+         a blurry crop — and only then admit we couldn't read it.
+      2. If this deal has no valuation yet, try to seed one from the screenshot
+         (an asking price, or the seller's own number) so a user who never had a
+         listing link is not stuck.
+      3. Replay every seller line the deal has not already seen.
+
+    A screenshot never becomes a command: `intent.classify` sends every image to
+    RELAY (§4.1), so "why" written on a photo is still evidence about a seller.
+    """
+    read = screenshot.read(media, caption=caption, seen=deal.seen_screenshot_lines)
+
+    if not read.ok():
+        # The caption is the fallback, not the failure message. A user who typed
+        # what was said AND attached the proof should get a real turn out of it.
+        if caption and deal.state is DealState.NEGOTIATING:
+            coach = _process_seller_lines(deal, [caption])
+            if coach:
+                STORE.save_deal(deal)
+                return coach, None, None
+        return cards.screenshot_unreadable(bool(caption)), None, None
+
+    if deal.state is DealState.AWAITING_RESEARCH:
+        return cards.not_negotiating(deal), None, None
+
+    seeded = False
+    if _awaiting_asking(deal):
+        seeded = _unblock_with_asking(deal, read.price_hint())
+    elif deal.state is not DealState.NEGOTIATING:
+        if deal.state in (DealState.CLOSED, DealState.WALKED):
+            return cards.not_negotiating(deal), None, None
+        # A screenshot of the LISTING itself names the car, and `run_research`
+        # now takes a description as readily as a URL — so that is real research,
+        # not a haircut, and it is worth the ~30s because there are no seller
+        # messages waiting on an answer. A screenshot of the CHAT is the other
+        # case: something IS waiting on an answer, so it takes the cheap seed and
+        # gets a number now.
+        if read.kind == "listing" and read.title and read.price_hint():
+            desc = f"{read.title}, asking ${read.price_hint():,.0f}"
+            deal.asking = float(read.price_hint())
+            deal.title = read.title
+            msg = cards.research_started(desc)
+            deal.log_turn("closer", msg)
+            _start_research(deal, None, background=True, description=desc)
+            return msg, None, None
+        seeded = _seed_deal_from_screenshot(deal, read)
+        if not seeded:
+            return cards.screenshot_needs_a_price(), None, None
+
+    if not read.has_new_lines():
+        if seeded:
+            STORE.save_deal(deal)
+            return cards.screenshot_started_deal(deal), "deal", None
+        return cards.screenshot_nothing_new(), None, None
+
+    before = len(deal.trajectory())
+    coach = _process_seller_lines(deal, read.seller_lines)
+    # Recorded whether or not the replay produced advice: a line we read and
+    # could not act on is still a line we must not read again.
+    deal.seen_screenshot_lines = screenshot.remember(deal.seen_screenshot_lines,
+                                                     read.fingerprints())
+    STORE.save_deal(deal)
+    if not coach:
+        return cards.screenshot_needs_a_price(), None, None
+
+    new_turns = len(deal.trajectory()) - before
+    blocks = [cards.screenshot_started_deal(deal)] if seeded else []
+    recap = cards.screenshot_recap(deal, new_turns, repeats=read.repeats,
+                                   dropped=read.dropped)
+    if recap:
+        blocks.append(recap)
+    blocks.append(coach)
+    # Multi-turn reads earn the chart: the whole point is that the curve moved
+    # more than once, and that is a picture, not a sentence.
+    kind = "deal" if (new_turns > 1 or seeded) else None
+    return "\n\n".join(blocks), kind, None
 
 
 def _relay(deal: Deal, text: Optional[str], media: list[str]) -> tuple[str, Optional[str], None]:
     """One negotiation turn — the ~90% case (§4.1)."""
+    if media:
+        return _relay_screenshot(deal, text, media)
+
+    # §7 A4: the listing 403'd, we asked for the asking price, this is it.
+    if _awaiting_asking(deal) and _unblock_with_asking(deal, _asking_from_text(text)):
+        return cards.unblocked(deal), "deal", None
+
     if deal.state is DealState.NEGOTIATING:
-        coach = _process_seller_turn(deal, text, media[0] if media else None)
+        coach = _process_seller_lines(deal, [text] if text else [])
         STORE.save_deal(deal)
         return (coach or cards.unparsed()), None, None
     if deal.state is DealState.AWAITING_LINK and not deal.listing_link:
@@ -384,8 +600,9 @@ def _dispatch(deal: Deal, text: Optional[str], media: list[str], meta: dict, *,
                         awaiting_asking=_awaiting_asking(deal))
 
     if c.intent is Kind.NEW:
-        return _start_new_deal(deal, c.url or _find_url(text),
-                               parked=parked, research_bg=research_bg)
+        url = c.url or _find_url(text)
+        return _start_new_deal(deal, url, parked=parked, research_bg=research_bg,
+                               description="" if url else c.meta.get("description", ""))
 
     if c.intent is Kind.HELP:
         return cards.help_card(), "help", None
@@ -623,22 +840,30 @@ def _new_deal(user_id: str, chat_id: Optional[str], phone: Optional[str]) -> Dea
 
 
 def _inbound_deal(user_id: str, chat_id: Optional[str], phone: Optional[str],
-                  text: Optional[str]) -> tuple[Deal, Optional[Deal]]:
+                  text: Optional[str], *,
+                  has_image: bool = False) -> tuple[Deal, Optional[Deal]]:
     """Resolve the deal an inbound message belongs to. Returns (deal, parked).
 
     A listing link ALWAYS starts a new deal and takes focus — a link is never
     folded into an existing negotiation. The one exception is the empty shell
     created for a brand-new user, which has nothing to preserve and would
     otherwise be orphaned by its own first message.
+
+    A car described in words does the same thing, and has to be decided here as
+    well as in `_dispatch`: this function picks which deal the message lands on,
+    so if it disagrees with the router the description starts a deal that the
+    router then researches onto the *previous* one. `_starts_a_deal` is the one
+    predicate both sides ask.
     """
     focused = _focused_deal(user_id, chat_id)
-    url = _find_url(text)
+    starts = _starts_a_deal(text, has_image=has_image)
 
-    if url and focused is not None and focused.listing_link is None \
+    if starts and focused is not None and focused.listing_link is None \
+            and focused.listing_desc is None \
             and focused.state == DealState.AWAITING_LINK:
         return _adopt(focused, chat_id, phone), None      # onboarding shell
 
-    if url and focused is not None:
+    if starts and focused is not None:
         parked = focused if focused.is_active() else None
         return _new_deal(user_id, chat_id, phone), parked
 
@@ -734,13 +959,13 @@ def _process_reaction(rx: linq.InboundReaction) -> None:
 
 
 def _signal_reaction(inb: linq.InboundMessage, deal: Deal) -> None:
-    """A second tapback that says what we *thought*, after the turn resolved.
+    """The tapback that says what we *thought*, once the turn resolved.
 
-    §5.1's table is four meanings, but only one of them is knowable before
-    inference. So 👍 lands instantly ("logged it, working") and this adds the
-    meaning-carrying one once we know it: ❗ for a bluff we just caught, ❤️ for
-    the message that closed the deal. iMessage carries several distinct tapback
-    types on one message, so these stack rather than replace.
+    The only tapbacks we send on an inbound message are the meaning-carrying
+    ones: ❗ for a bluff we just caught, ❤️ for the message that closed the deal.
+    There is deliberately no blanket 👍 read receipt — "we got it" is already
+    carried by the typing indicator, and a tapback on every message would make
+    these two invisible.
 
     Silent by construction — `react` swallows its own failures.
     """
@@ -783,12 +1008,10 @@ def _process_inbound(inb: linq.InboundMessage) -> str:
     user_id = _resolve_user(inb.sender)
     phone = inb.sender
     try:
-        # §5.1 — acknowledge before any inference runs. Research takes ~30s and
-        # an LLM turn ~3s; in iMessage that silence reads as broken. One API
-        # call, sub-second, and it tells the user we have their message before a
-        # single token is generated. Decorative: `react` never raises.
-        linq.react(inb.message_id, "like")
-
+        # No blanket read-receipt tapback. The typing indicator below already
+        # says "we have your message" for the whole turn, and a 👍 on literally
+        # every inbound is noise that drowns the two tapbacks that carry meaning
+        # (`_signal_reaction`: ❗ bluff, ❤️ closed).
         allowed, notify = _rate_check(user_id)
         if not allowed:
             msg = cards.throttled()
@@ -796,12 +1019,14 @@ def _process_inbound(inb: linq.InboundMessage) -> str:
                 _send_now(phone, msg)
             return msg
 
-        if _find_url(inb.text) and _at_deal_limit(user_id):
+        has_image = bool(inb.media_urls)
+        if _starts_a_deal(inb.text, has_image=has_image) and _at_deal_limit(user_id):
             msg = cards.deal_limit(MAX_ACTIVE_DEALS)
             _send_now(phone, msg)
             return msg
 
-        deal, parked = _inbound_deal(user_id, inb.chat_id, phone, inb.text)
+        deal, parked = _inbound_deal(user_id, inb.chat_id, phone, inb.text,
+                                     has_image=has_image)
         # §5.3 — hold a typing indicator for the whole turn. `typing_while`
         # clears it in a `finally`, so an exception below cannot leave the thread
         # showing us typing forever.
@@ -934,9 +1159,14 @@ async def relay_message(deal_id: str, body: RelayMessage,
 
 # ── routes: simulate (keyboard demo, no auth, no phone) ──────────────────────
 class Simulate(BaseModel):
-    text: str
+    text: str = ""
     deal_id: Optional[str] = None
     phone: Optional[str] = None
+    # Screenshots, so the §7 A1 path is testable without a phone in the loop.
+    # Each entry is an https URL, a data URI, or raw base64 — `app.runware`
+    # inlines all three.
+    images: list[str] = []
+    image_url: Optional[str] = None                # convenience for a single one
 
 
 @app.post("/simulate")
@@ -949,9 +1179,12 @@ async def simulate(body: Simulate):
         deal = Deal(user_id=DEV_USER_ID, phone=body.phone, title="Demo deal")
         STORE.save_deal(deal)
 
+    media = list(body.images) + ([body.image_url] if body.image_url else [])
+
     def run() -> str:
         # inline research so a scripted curl demo sees the final state synchronously
-        return route_message(deal, body.text, [], send=False, research_bg=False)
+        return route_message(deal, body.text or None, media,
+                             send=False, research_bg=False)
 
     reply = await asyncio.to_thread(run)
     # A link starts a NEW deal and moves focus, so report the deal the user is

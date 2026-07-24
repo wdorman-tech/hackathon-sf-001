@@ -741,7 +741,10 @@ def onboarding() -> str:
         "I'm Closer. Send me a used-car listing and I'll tell you what it's "
         "actually worth, then coach every counter until you're done.",
         "",
-        'Text me a link to start. Say "help" for the rest.',
+        "A link works. So does just telling me the car — "
+        '"2008 Toyota Camry LE, 128k miles, he wants $6,400."',
+        "",
+        'Say "help" for the rest.',
     ])
 
 
@@ -752,6 +755,9 @@ def help_card() -> str:
         "🤝 Closer",
         "",
         "Send a listing link and I'll research the car, then price every counter.",
+        "",
+        "No link? Describe it — \"2008 Toyota Camry LE, 128k, asking $6,400\" — and "
+        "I'll find the comps myself.",
         "",
         # One paragraph per bubble line: iMessage wraps proportional text itself,
         # and a hard break mid-sentence lands in a different place on every phone.
@@ -917,15 +923,21 @@ def research_blocked(deal: "Deal") -> str:
     ])
 
 
-def research_started(link: str) -> str:
+def research_started(link: Optional[str] = None, *, description: str = "") -> str:
     del link                                       # the user just sent it; don't echo
+    if description:
+        # No page to read, so say what we're actually about to do — otherwise
+        # "pulling comps" reads as though we found a listing we never had.
+        return ("On it — no link needed. Searching comps and known problems for "
+                "that one. ~30s. 🔎")
     return "On it — pulling comps and known problems for this one. ~30s. 🔎"
 
 
 def no_focus() -> str:
     return "\n".join([
         "No deal in focus.",
-        'Send a listing link to start one, or say "deals" to pick one up.',
+        'Send a listing link — or just describe the car — to start one, '
+        'or say "deals" to pick one up.',
     ])
 
 
@@ -945,6 +957,153 @@ def not_negotiating(deal: "Deal") -> str:
 def unparsed() -> str:
     return ("Didn't catch a seller message in that — paste their text, "
             "or a screenshot of your chat with them.")
+
+
+# ── screenshots (§7 A1) ──────────────────────────────────────────────────────
+# The relay path people actually use. Every line here says what was *read*,
+# because the one thing a user cannot verify about a screenshot relay is whether
+# the machine saw what they saw — and a coach message priced off a misread
+# bubble is worse than no coach message.
+
+def _price_walk(values: Sequence[Optional[float]], limit: int = 4) -> Optional[str]:
+    """`$5,900 → $5,600 → $5,400`, consecutive duplicates collapsed.
+
+    Returns None below two distinct points: a one-item "walk" is just a number,
+    and the card already prints that number somewhere better.
+    """
+    walk: list[float] = []
+    for v in values:
+        if v is None:
+            continue
+        if walk and abs(float(v) - walk[-1]) < 1:
+            continue
+        walk.append(float(v))
+    if len(walk) < 2:
+        return None
+    if len(walk) > limit:                          # keep the ends, drop the middle
+        walk = walk[:1] + walk[-(limit - 1):]
+        return " → ".join([_money(walk[0]), "…"] + [_money(v) for v in walk[1:]])
+    return " → ".join(_money(v) for v in walk)
+
+
+def screenshot_recap(deal: "Deal", new_turns: int, *, repeats: int = 0,
+                     dropped: int = 0) -> Optional[str]:
+    """What the screenshot added, before the coach message says what to do.
+
+        📸 Read 3 of their messages off that.
+
+        They went $5,900 → $5,600 → $5,400
+        Their floor: $5,601 → $5,340 → $5,062
+
+    None for a single new message: one bubble read off a screenshot is an
+    ordinary turn, and the coach message below it is the whole answer. The recap
+    earns its space only when the screenshot moved the curve more than once.
+    """
+    if new_turns < 2:
+        return None
+    traj = _trajectory(deal)[-new_turns:]
+    lines = [f"📸 Read {new_turns} of their messages off that."]
+
+    said = _price_walk([t.get("seller_price") for t in traj])
+    floors = _price_walk([t.get("floor_est") for t in traj])
+    body: list[str] = []
+    if said:
+        body.append(f"They went {said}")
+    if floors:
+        body.append(f"Their floor: {floors}")
+    elif traj and traj[-1].get("floor_est") is not None:
+        body.append(f"Their floor reads {_money(traj[-1]['floor_est'])}")
+    if body:
+        lines += [""] + body
+
+    tail: list[str] = []
+    if repeats:
+        tail.append(f"{repeats} I'd already logged")
+    if dropped:
+        tail.append(f"{dropped} older ones skipped")
+    if tail:
+        lines += ["", f"({' · '.join(tail)}.)"]
+    return "\n".join(lines)
+
+
+def replayed_turn(rec: dict) -> str:
+    """The transcript entry for a turn that was replayed, not sent.
+
+    A screenshot carrying four seller messages produces four belief updates and
+    ONE coach message — the user is not owed advice on a message they already
+    have the answer to. But `Deal.trajectory()` reads each turn's recommendation
+    off a `closer` feed entry, so the intermediate turns still need one.
+
+    Its text is derived from the recommendation and nothing else. Putting a
+    drafted "send this" line here instead would put words in the transcript that
+    the user was never actually told — a lie in the one record they can scroll
+    back through.
+    """
+    floor = rec.get("floor_point_est")
+    if floor is None:
+        return "↺ Replayed from a screenshot."
+    return f"↺ Replayed from a screenshot — their floor read {_money(floor)} here."
+
+
+def screenshot_unreadable(had_caption: bool = False) -> str:
+    """Nothing usable came back. Say which half failed and how to fix it."""
+    fix = ("Retake it zoomed in on their messages — or just type what they said."
+           if not had_caption else
+           "Type what they said and I'll price it.")
+    return "\n".join([
+        "Couldn't read that one. 📸",
+        "",
+        f"Either it's not a chat with the seller or the text is too small. {fix}",
+    ])
+
+
+def screenshot_nothing_new() -> str:
+    return "\n".join([
+        "📸 Read it — but I already had every one of those.",
+        "",
+        "Send me their newest reply and I'll price the counter.",
+    ])
+
+
+def screenshot_needs_a_price() -> str:
+    """A screenshot arrived before this deal has any valuation to reason from."""
+    return "\n".join([
+        "📸 Read it — but I don't know this car yet, so I can't price anything.",
+        "",
+        "Send me the listing link and I'll research it properly. "
+        "If there isn't one, just tell me what they're asking.",
+    ])
+
+
+def screenshot_started_deal(deal: "Deal") -> str:
+    """No link, but the screenshot showed a price. Say what we did and what it cost.
+
+    The honesty here is load-bearing: this valuation is a haircut off asking with
+    no comps behind it, and a user who thinks it is researched will trust a
+    number that has not earned it.
+    """
+    return "\n".join([
+        f"📸 Got it — {_name(deal)} at {_money(deal.asking)}.",
+        "",
+        f"No listing link, so I'm working off the price in your screenshot: "
+        f"fair value reads about {_money(deal.V)}, walk-away {_money(deal.R)}. "
+        f"That's a rule of thumb, not research.",
+        "",
+        "Send me the link whenever you have it and I'll do this properly.",
+    ])
+
+
+def unblocked(deal: "Deal") -> str:
+    """§7 A4: the listing was unreadable and the user supplied the asking price."""
+    return "\n".join([
+        f"Got it — {_money(deal.asking)} asking.",
+        "",
+        f"Working from that: fair value reads about {_money(deal.V)}, and your "
+        f"walk-away is {_money(deal.R)}. No comps behind it, so treat it as a "
+        f"starting point.",
+        "",
+        "Relay whatever they say next — typed or a screenshot — and I'll price the reply.",
+    ])
 
 
 def closed_message(deal: "Deal") -> str:
@@ -982,7 +1141,10 @@ __all__ = [
     "confirm_delete", "deleted", "renamed", "undone", "nothing_to_undo",
     "deal_limit", "throttled", "offer_locked", "softer_offer", "pinned",
     "research_blocked", "research_started", "no_focus", "not_negotiating",
-    "unparsed", "closed_message", "walked_message", "error",
+    "unparsed", "closed_message", "walked_message", "error", "unblocked",
+    # screenshots (§7 A1)
+    "screenshot_recap", "screenshot_unreadable", "screenshot_nothing_new",
+    "screenshot_needs_a_price", "screenshot_started_deal", "replayed_turn",
     # glyphs + helpers
     "BLOCKS", "DOT_FULL", "DOT_EMPTY", "sparkline", "meter", "confidence_dots",
     # shared derivations — `render.py` draws the same conjunction this text card

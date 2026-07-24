@@ -174,9 +174,9 @@ def test_parse_reaction_reads_the_documented_shape() -> None:
 
 
 def test_parse_reaction_drops_our_own_echoes() -> None:
-    """§5.1 puts a 👍 on every inbound message. Without this guard, every
-    acknowledgement we send re-enters as a user command and the agent talks to
-    itself for as long as the thread is alive."""
+    """Our own ❗/❤️ tapbacks echo back with `is_from_me: true`. Without this
+    guard every tapback we send re-enters as a user command and the agent talks
+    to itself for as long as the thread is alive."""
     assert linq.parse_reaction({
         "event_type": "reaction.added",
         "data": {"chat_id": "c1", "message_id": "m1", "reaction_type": "like",
@@ -437,9 +437,12 @@ class TestReactionRouting:
 
 
 class TestInboundAcknowledgement:
-    """§5.1 — react before any inference runs."""
+    """§5.1 — the only tapbacks we send are the ones that mean something."""
 
-    def test_inbound_is_tapbacked_before_the_turn_runs(self, store, monkeypatch) -> None:
+    def test_an_ordinary_inbound_gets_no_tapback(self, store, monkeypatch) -> None:
+        """No blanket 👍 read receipt. The typing indicator carries "we got it";
+        a tapback on every message would drown ❗ and ❤️, which are the two that
+        say something the user could not already see."""
         order: list[str] = []
         monkeypatch.setattr(linq, "react",
                             lambda mid, kind, emoji=None: order.append(f"react:{kind}"))
@@ -448,8 +451,7 @@ class TestInboundAcknowledgement:
                             lambda *a, **k: order.append("inference") or "ok")
         main._process_inbound(linq.InboundMessage(
             chat_id="c1", message_id="m1", sender=PHONE, text="hey"))
-        assert order[0] == "react:like", "the 👍 must land before inference"
-        assert "inference" in order
+        assert order == ["inference"]
 
     def test_a_bluff_turn_gets_an_emphasize_tapback(self, store, camry, monkeypatch) -> None:
         reacts: list[str] = []

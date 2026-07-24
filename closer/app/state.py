@@ -112,6 +112,10 @@ class Deal(BaseModel):
     nickname: Optional[str] = None             # user-assigned; wins over `title` in cards
 
     listing_link: Optional[str] = None
+    # The car in the buyer's own words, when they had no link to send. Research
+    # values either (`research.run_research`), so a deal is "real" if it has one
+    # of the two — see `main._real_deals`.
+    listing_desc: Optional[str] = None
     state: DealState = DealState.AWAITING_LINK
 
     # Valuation truth — Closer's own agentic research (app.research), with sources.
@@ -127,6 +131,12 @@ class Deal(BaseModel):
     last_user_offer: Optional[float] = None
     feed: list[TurnRecord] = Field(default_factory=list)
     snapshot: Optional[dict] = None             # latest recommendation + floor_map
+
+    # Fingerprints of seller lines already replayed off a screenshot
+    # (`app.screenshot.fingerprint`). Two screenshots of one thread overlap in
+    # the middle — this is what stops the shared bubbles updating the posterior
+    # twice on evidence that only happened once.
+    seen_screenshot_lines: list[str] = Field(default_factory=list)
 
     # Frozen at the moment of close. The stats card sums this across every closed
     # deal, so it cannot be re-derived later from a log that UNDO may have changed.
@@ -145,12 +155,23 @@ class Deal(BaseModel):
                                     recommendation=recommendation))
 
     def belief(self) -> Optional[BeliefState]:
-        """Reconstruct the live posterior by replaying the signal log."""
+        """Reconstruct the live posterior by replaying the signal log.
+
+        None — never an exception — when the deal has no numbers to build one
+        from. A `blocked` research payload (§7 A4: the listing 403'd) sets
+        asking/V/R to 0.0 rather than None, and `BeliefState` rejects a
+        non-positive asking price. Every caller already handles None; letting
+        that ValueError escape instead turned an answerable state into a
+        stack trace on a worker thread, which the user reads as silence.
+        """
         if self.asking is None or self.R is None or self.V is None:
             return None
-        b = BeliefState(self.asking, self.R, self.V, offer_ceiling=OFFER_CEILING)
-        for s in self.signals_log:
-            b.update(Signals(**s))
+        try:
+            b = BeliefState(self.asking, self.R, self.V, offer_ceiling=OFFER_CEILING)
+            for s in self.signals_log:
+                b.update(Signals(**s))
+        except (ValueError, TypeError):
+            return None
         return b
 
     def display_name(self) -> str:
@@ -202,6 +223,7 @@ class Deal(BaseModel):
             "nickname": self.nickname,
             "state": self.state.value,
             "listing_link": self.listing_link,
+            "listing_desc": self.listing_desc,
             "phone": self.phone,
             "asking": self.asking,
             "R": self.R,

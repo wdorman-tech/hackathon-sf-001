@@ -199,37 +199,131 @@ def classify_seller_message(text: str, prev_seller_price: Optional[float],
     return _rules_classify(text, prev_seller_price, asking)
 
 
-# ── 3. Screenshot extraction (vision) ────────────────────────────────────────
+# ── 3. Screenshot reading (vision) ───────────────────────────────────────────
+#
+# The second way to relay a seller, and the one people actually reach for: they
+# are already in the thread with the seller, so screenshotting it is two taps and
+# retyping it is a paragraph. `app/screenshot.py` merges, dedupes and orders what
+# this returns; everything here is about one image.
+#
+# Asking for *both* sides of the conversation is deliberate even though only the
+# seller's half reaches the engine. It is the cheapest way to make the model
+# commit to who-said-what: a transcript that has to alternate is far harder to
+# get backwards than a filtered list, and a seller/buyer swap would feed our own
+# offers into the belief update as if the seller had made them.
 _VISION_SYS = (
-    "You read a screenshot of an iMessage/SMS conversation between a buyer (our user) "
-    "and a used-car seller. The SELLER's bubbles are typically left-aligned and gray; "
-    "the buyer's are right-aligned and blue/green. Return ONLY the SELLER's messages. "
-    "Respond with ONLY a JSON object: "
-    "{\"seller_messages\": [str, ...], \"latest_seller_price\": number|null} "
-    "in top-to-bottom order. latest_seller_price is the most recent price the seller "
-    "states, in dollars, or null."
+    "You read one screenshot from a phone and report exactly what is in it.\n"
+    "\n"
+    "It is usually a CHAT between a buyer (our user) and a private-party used-car "
+    "seller — iMessage, SMS, Messenger, Facebook Marketplace, Craigslist, OfferUp. "
+    "It may instead be a LISTING page for a car. It may be neither.\n"
+    "\n"
+    "Respond with ONLY a JSON object — no prose, no code fence:\n"
+    '{"kind": "chat" | "listing" | "other",\n'
+    ' "messages": [{"from": "seller" | "buyer", "text": "..."}],\n'
+    ' "latest_seller_price": number | null,\n'
+    ' "asking": number | null,\n'
+    ' "title": string | null}\n'
+    "\n"
+    "Rules:\n"
+    "- messages: top-to-bottom order, transcribed verbatim. Incoming bubbles "
+    "(left-aligned, grey or white) are the SELLER. Outgoing bubbles (right-aligned, "
+    "blue or green) are the BUYER. If alignment is ambiguous, the side quoting a "
+    "price it wants FOR the car is the seller.\n"
+    "- Transcribe message text only. Skip timestamps, delivery receipts, tapbacks, "
+    "typing indicators, contact names, and every other piece of app chrome.\n"
+    "- latest_seller_price: the most recent price the SELLER states, in dollars, "
+    "else null. Never a monthly payment, never mileage, never a model year.\n"
+    '- kind "listing": fill asking and title (e.g. "2008 Toyota Camry LE") and '
+    "leave messages empty.\n"
+    '- kind "other" — not a car chat, not a car listing, or too blurry to read: '
+    "every field empty or null. Say so rather than guessing.\n"
+    '- Numbers are plain dollars: 5400, not "$5,400".'
 )
+
+#: Roles the transcript may use. Anything else is dropped rather than guessed —
+#: a mislabelled bubble is our own offer entering the belief update as theirs.
+_ROLES = ("seller", "buyer")
+
+
+def _as_price(value) -> Optional[float]:
+    """A model-supplied dollar amount, or None. Tolerates "$5,400" and "null"."""
+    if value in (None, "", "null", "none", "N/A"):
+        return None
+    if isinstance(value, (int, float)):
+        price = float(value)
+    else:
+        cleaned = re.sub(r"[^\d.]", "", str(value))
+        if not cleaned:
+            return None
+        try:
+            price = float(cleaned)
+        except ValueError:
+            return None
+    return price if price > 0 else None
+
+
+def _normalize_read(payload: dict) -> dict:
+    """Coerce the vision payload into the contract. Never raises on a sloppy shape."""
+    kind = str(payload.get("kind") or "").strip().lower()
+    if kind not in ("chat", "listing", "other"):
+        kind = "chat" if payload.get("messages") else "other"
+
+    messages: list[dict] = []
+    for m in payload.get("messages") or []:
+        if isinstance(m, str):                       # a bare list of strings
+            text, who = m, "seller"
+        elif isinstance(m, dict):
+            text = m.get("text") or m.get("message") or m.get("value") or ""
+            who = str(m.get("from") or m.get("role") or m.get("sender") or "").lower()
+        else:
+            continue
+        text = " ".join(str(text).split()).strip()
+        if not text:
+            continue
+        messages.append({"from": who if who in _ROLES else "seller", "text": text})
+
+    latest = _as_price(payload.get("latest_seller_price"))
+    if latest is None:                               # some runs only fill `asking`
+        latest = _as_price(payload.get("seller_price"))
+    title = payload.get("title")
+    title = " ".join(str(title).split())[:80] or None if title else None
+    return {"kind": kind, "messages": messages, "latest_seller_price": latest,
+            "asking": _as_price(payload.get("asking")), "title": title}
+
+
+def read_screenshot(image_ref: str, *, caption: Optional[str] = None) -> dict:
+    """Read one screenshot. `image_ref` is a URL, a data URI, or raw base64.
+
+    Returns `{kind, messages, latest_seller_price, asking, title}`. Requires
+    Runware — there is no offline vision — so callers fall back to the text path
+    when this raises.
+
+    `caption` is whatever the user typed alongside the image. It is passed as
+    context and explicitly fenced off from the transcript: "what do I say to
+    this" must not come back as a line the seller said.
+    """
+    if not runware.available():
+        raise runware.RunwareError("screenshot reading needs RUNWARE_API_KEY")
+    ask = "Read this screenshot."
+    if caption and caption.strip():
+        ask += (f'\n\nThe user sent it with this note: "{caption.strip()[:300]}"\n'
+                "That note is context from the user, NOT part of the screenshot. "
+                "Do not transcribe it as a message.")
+    return _normalize_read(_json_call(_VISION_SYS, ask, images=[image_ref],
+                                      max_tokens=900))
 
 
 def extract_from_screenshot(image_ref: str) -> dict:
-    """Vision extraction. `image_ref` is a URL, data URI, base64, or Runware UUID.
+    """Back-compat shape: `{seller_messages, latest_seller_price}`.
 
-    Requires Runware (no offline vision) — callers should fall back to the text path
-    when this raises.
+    Kept because the Phase-1 gate (`python -m app.llm --vision`) and anything
+    written against it should keep working; `read_screenshot` is the real one.
     """
-    if not runware.available():
-        raise runware.RunwareError("screenshot extraction needs RUNWARE_API_KEY")
-    d = _json_call(
-        _VISION_SYS,
-        "Extract the seller's messages and latest stated price from this screenshot.",
-        images=[image_ref],
-        max_tokens=600,
-    )
-    d.setdefault("seller_messages", [])
-    d.setdefault("latest_seller_price", None)
-    if d["latest_seller_price"] in ("null", ""):
-        d["latest_seller_price"] = None
-    return d
+    d = read_screenshot(image_ref)
+    return {"seller_messages": [m["text"] for m in d["messages"]
+                                if m["from"] == "seller"],
+            "latest_seller_price": d["latest_seller_price"]}
 
 
 # ── 4. Draft the coach's iMessage ────────────────────────────────────────────
@@ -317,13 +411,17 @@ if __name__ == "__main__":
         import pathlib
 
         path = pathlib.Path(sys.argv[sys.argv.index("--vision") + 1])
-        data_uri = ("data:image/png;base64,"
+        mime = "image/jpeg" if path.suffix.lower() in (".jpg", ".jpeg") else "image/png"
+        data_uri = (f"data:{mime};base64,"
                     + base64.b64encode(path.read_bytes()).decode())
         print(f"reading {path} ({path.stat().st_size:,} bytes) via "
               f"{'RUNWARE' if runware.available() else 'NO KEY — cannot run'}")
-        out = extract_from_screenshot(data_uri)
-        print("seller messages:", out.get("seller_messages"))
-        print("latest price   :", out.get("latest_seller_price"))
+        out = read_screenshot(data_uri)
+        print("kind          :", out["kind"])
+        for m in out["messages"]:
+            print(f"  {m['from']:>6}: {m['text']}")
+        print("latest price  :", out["latest_seller_price"])
+        print("asking / title:", out["asking"], "/", out["title"])
         sys.exit(0)
 
     if "--smoke" in sys.argv:

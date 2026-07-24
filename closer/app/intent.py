@@ -14,7 +14,8 @@ escape hatch for genuinely ambiguous input.
 
 ━━ Trigger table (§4.1) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     RELAY   default — anything unmatched, anything with a price, any image
-    NEW     a URL anywhere in the message
+    NEW     a URL anywhere in the message · a car described in words
+            ("2008 Toyota Camry LE, 128k, asking $6,400") · /new <anything>
     LIST    deals · my deals · list · /deals · what am I working on
     SWITCH  switch to X · go to X · X deal · bare int 1-10 · /switch X
     CARD    card · status · where are we · show me · the curve · /card
@@ -89,7 +90,10 @@ class Classification:
 
     `arg`   — the operand for SWITCH / RENAME / DELETE (a nickname, a title
               fragment, or a stringified list index). None for the rest.
-    `url`   — the listing link, when intent is NEW.
+    `url`   — the listing link, when intent is NEW. None when the user described
+              the car instead of linking it — then `meta["description"]` carries
+              the words, and `research.run_research` searches its way to a
+              valuation without a page to read.
     `price` — the price parsed out of a RELAY, when there was one. Present
               purely so callers can assert the price-beats-command rule held.
     `why`   — which rule fired, for tests and for the `/simulate` trace.
@@ -174,6 +178,153 @@ def _phrase(text: str, phrases: Sequence[str]) -> Optional[str]:
     for p in phrases:
         if re.search(r"(?<!\w)" + re.escape(p) + r"(?!\w)", text):
             return p
+    return None
+
+
+# ── a car described in words, with no link ───────────────────────────────────
+# Half the real listings a buyer sees are unlinkable: a Craigslist page behind a
+# login, a photo of a windshield, a friend-of-a-friend selling in a parking lot.
+# `research.run_research` can value any of those from a description plus web
+# search, so the grammar has to be able to *say* one. "2008 Toyota Camry LE,
+# 128k miles, he wants $6,400" starts a deal exactly like a URL does.
+#
+# Precision beats recall here, because the failure mode is loud: a misread
+# relay creates a bogus deal mid-negotiation. Three conditions, all required:
+#   1. a plausible model year AND a real make, within 3 tokens of each other,
+#   2. that pair sitting near the front of the message (a listing headline
+#      leads with the car; a relay mentioning one buries it), and
+#   3. no seller-relay opener ("he says the 2008 Camry down the road went for…").
+_MAKES = frozenset("""
+acura alfa aston audi bentley bmw buick cadillac chevy chevrolet chrysler
+citroen cupra dodge ferrari fiat ford genesis gmc honda hummer hyundai infiniti
+isuzu jaguar jeep kia lamborghini lancia land rover landrover lexus lincoln
+lotus maserati mazda mclaren mercedes mercury mini mitsubishi nissan oldsmobile
+opel peugeot plymouth polestar pontiac porsche ram renault rivian rolls saab
+saturn scion seat skoda smart subaru suzuki tesla toyota vauxhall volkswagen
+volvo vw
+""".split())
+# Two-word makes, matched before the single-token pass so "land rover" doesn't
+# depend on "land" being in the set (it isn't — "land" is a common word).
+_MAKE_PAIRS = frozenset({"land rover", "range rover", "alfa romeo", "aston martin",
+                         "rolls royce", "mercedes benz"})
+
+# People say "2008 Camry", not "2008 Toyota Camry" — the make is the part they
+# drop. Only models distinctive enough that a year sitting three tokens away
+# can't be coincidence; `focus`, `escape`, `fusion`, `ranger` and friends are
+# deliberately absent because they are ordinary English words and the cost of a
+# false NEW mid-negotiation is a deal researched onto the wrong car.
+_MODELS = frozenset("""
+4runner 911 a3 a4 a6 accord altima avalon bronco camaro camry challenger charger
+cherokee civic colorado corolla corvette cr-v crv cx-30 cx-5 cx-9 cx5 cx9
+elantra equinox f-150 f150 f-250 f250 forester frontier golf grand highlander
+impala impreza jetta kona leaf malibu maxima model mustang odyssey outback
+outlander pathfinder passat pilot prius q5 ram rav4 rogue santa sentra sequoia
+sienna silverado sonata sorento sportage suburban tacoma tahoe telluride tiguan
+tucson tundra versa wrangler wrx xterra yukon
+""".split())
+
+_YEAR_TOKEN_RE = re.compile(r"^(19[7-9]\d|20[0-4]\d)$")
+
+#: How far into the message the year/make pair may sit and still read as a
+#: headline rather than an aside.
+_VEHICLE_HEAD_TOKENS = 6
+
+#: Openers that mean "the seller said" — the message is a relay no matter what
+#: car it names.
+_RELAY_LEAD_RE = re.compile(
+    r"^(he|she|they|it|the\s+seller|seller|the\s+guy|guy|dude|owner|the\s+owner|"
+    r"my\s+\w+)\b\s*(said|says|say|told|wants|wanted|offered|came|countered|"
+    r"replied|texted|is|was|just|only|won'?t|will|claims|claimed)?")
+
+#: Lead-ins a buyer puts in front of the car. Stripped so the year/make pair is
+#: still "near the front" after "I'm looking at a …".
+_VEHICLE_LEADINS = (
+    "new deal", "start a deal", "start deal", "deal on", "looking at",
+    "look at", "found a", "found this", "found", "thinking about",
+    "considering", "theres a", "there's a", "there is a", "im buying",
+    "i'm buying", "buying a", "checking out", "check out", "seeing a",
+    "test driving", "test drove", "price a", "value a", "what about a",
+    "what about", "how about a", "how about", "research", "value", "price",
+    "guy is selling a", "guy selling a", "selling a", "for sale", "car is a",
+    "its a", "it's a", "i am looking at", "i'm looking at", "im looking at",
+)
+
+
+def _tokens(text: str) -> list[str]:
+    return [w.strip(_PUNCT).lower() for w in re.split(r"[\s/]+", text) if w.strip(_PUNCT)]
+
+
+#: Lead-ins that say "this is a car I want you to look at" outright. After one
+#: of these a bare year is enough — "new deal: 2008 Camry" needs no make, and
+#: "found a 2011 Sienna" needs no price. The weaker lead-ins in
+#: `_VEHICLE_LEADINS` only trim the sentence; these also lower the bar.
+_STRONG_LEADINS = frozenset({
+    "new deal", "start a deal", "start deal", "deal on", "looking at",
+    "look at", "found a", "found this", "thinking about", "considering",
+    "im buying", "i'm buying", "buying a", "checking out", "check out",
+    "test driving", "test drove", "price a", "value a", "research",
+    "guy is selling a", "guy selling a", "selling a", "i am looking at",
+    "i'm looking at", "im looking at",
+})
+
+
+def _strip_vehicle_leadin(text: str) -> tuple[str, bool]:
+    """Drop buyer lead-in phrases from the front ("looking at a 2008 …").
+
+    Returns `(trimmed, strong)` — `strong` is True when one of the trimmed
+    phrases was an explicit "start a deal on this" (see `_STRONG_LEADINS`).
+
+    Case-preserving: the trimmed string is handed to the research agent, and
+    "Toyota Camry LE" reads better in a prompt than "toyota camry le".
+    """
+    s = re.sub(r"\s+", " ", text.strip())
+    strong = False
+    for _ in range(3):                                  # "hey, so I'm looking at a"
+        s = re.sub(r"^(hey|hi|hello|yo|ok|okay|so|and|also|um|uh|please|pls)\b[\s,]*",
+                   "", s, flags=re.I).strip()
+        hit = next((p for p in _VEHICLE_LEADINS
+                    if s.lower().startswith(p + " ") or s.lower().startswith(p + ":")),
+                   None)
+        if hit is None:
+            break
+        strong = strong or hit in _STRONG_LEADINS
+        s = s[len(hit):].strip(" ,:-–—").strip()
+        s = re.sub(r"^(a|an|the|this|that|my)\b\s+", "", s, flags=re.I).strip()
+    return s, strong
+
+
+def vehicle_description(text: Optional[str]) -> Optional[str]:
+    """The car this message describes, or None if it doesn't describe one.
+
+    Returns the message with any buyer lead-in trimmed — what gets handed to
+    `research.run_research(description=…)`. Pure; no I/O.
+    """
+    body = (text or "").strip()
+    if not body or URL_RE.search(body):
+        return None
+    if _RELAY_LEAD_RE.match(body.lower()):
+        return None
+
+    stripped, strong = _strip_vehicle_leadin(body)
+    for candidate in (stripped, _norm(body)):
+        toks = _tokens(candidate)
+        if not toks:
+            continue
+        year_i = next((i for i, t in enumerate(toks) if _YEAR_TOKEN_RE.match(t)), None)
+        if year_i is None:
+            continue
+        name_i = None
+        for i in range(len(toks)):
+            pair = " ".join(toks[i:i + 2])
+            if pair in _MAKE_PAIRS or toks[i] in _MAKES or toks[i] in _MODELS:
+                name_i = i
+                break
+        head = min(i for i in (name_i, year_i) if i is not None) < _VEHICLE_HEAD_TOKENS
+        named = name_i is not None and abs(name_i - year_i) <= 3
+        if head and (named or (strong and year_i < _VEHICLE_HEAD_TOKENS)):
+            # Hand the model the trimmed message when trimming found the car,
+            # otherwise the message verbatim.
+            return stripped if candidate is stripped else body
     return None
 
 
@@ -346,11 +497,21 @@ def classify(text: Optional[str],
     is the one documented exception to the bare-integer SWITCH rule, and it is
     off by default so a caller that never sets it cannot be surprised by it.
     """
+    body = (text or "").strip()
+
     if has_image:
-        # An image is always evidence about a seller, never a command. §4.1.
+        # An image is always evidence about a seller, never a command (§4.1) —
+        # with the one exception the URL rule already forces everywhere else. A
+        # Marketplace share sheet can attach the listing photo alongside the
+        # link, and "a listing link ALWAYS starts a deal" (§7 A2) has to survive
+        # that: without this, the share-sheet paste with a photo lands as a
+        # relay on a deal that has no listing yet, and research never runs.
+        u = URL_RE.search(body)
+        if u:
+            return Classification(Intent.NEW, url=u.group(0), price=parse_price(body),
+                                  why="url+image")
         return Classification(Intent.RELAY, why="image")
 
-    body = (text or "").strip()
     if not body:
         return Classification(Intent.RELAY, why="empty")
 
@@ -370,8 +531,16 @@ def classify(text: Optional[str],
             arg = tail.strip() or None
             if kind is Intent.NEW:
                 u = URL_RE.search(tail)
-                return Classification(Intent.NEW, url=u.group(0) if u else None,
-                                      why="slash:new")
+                if u:
+                    return Classification(Intent.NEW, url=u.group(0), why="slash:new")
+                # `/new 2008 Camry LE, 128k, asking 6400` — no link, so the
+                # operand IS the description. Deliberately not run through
+                # `vehicle_description`: the slash is the user saying "this is a
+                # new deal", so anything after it starts one.
+                desc = (tail or "").strip(" ,:-–—").strip()
+                return Classification(Intent.NEW, url=None, price=parse_price(tail),
+                                      why="slash:new:description",
+                                      meta={"description": desc} if desc else {})
             if kind is Intent.RELAY:
                 # `/say he came down to 5,400` — force a relay even if the body
                 # would otherwise read as a command. `meta.text` is the payload
@@ -389,6 +558,20 @@ def classify(text: Optional[str],
     if u:
         return Classification(Intent.NEW, url=u.group(0), price=parse_price(body),
                               why="url")
+
+    # ── 2b. a car described in words also means a new deal ───────────────────
+    # Same position in the order as the URL rule and for the same reason: a
+    # listing headline usually carries a price ("2008 Toyota Camry LE · 128k ·
+    # $6,400") and the price rule would otherwise swallow the whole onboarding
+    # flow. `vehicle_description` is deliberately narrow — see its docstring —
+    # and `awaiting_asking` suppresses it entirely, because in that window the
+    # user is answering our question about a deal that already exists.
+    if not awaiting_asking:
+        desc = vehicle_description(body)
+        if desc:
+            return Classification(Intent.NEW, url=None, price=parse_price(body),
+                                  why="vehicle-description",
+                                  meta={"description": desc})
 
     core, cased = _core(body)
     norm = _norm(body)

@@ -265,10 +265,10 @@ def send_bubbles(to: str, texts: Iterable[str], *, effect: Optional[str] = None,
 
 # ── tapbacks (§5.1 out, §5.2 in) ─────────────────────────────────────────────
 def react(message_id: str, type: str, emoji: Optional[str] = None) -> dict:  # noqa: A002
-    """Tapback a message — 👍 logged, ❗ bluff spotted, ❓ couldn't parse.
+    """Tapback a message — ❗ bluff spotted, ❤️ deal closed.
 
-    Decorative: never raises. §5.1's whole value is that it lands in under a
-    second, before any inference runs, so it must also never block one.
+    Decorative: never raises. It rides alongside a reply the user is waiting on,
+    so it must never block one.
     """
     if not message_id:
         return {"ok": False, "error": "no message_id"}
@@ -406,9 +406,9 @@ def parse_webhook(body: dict) -> Optional[InboundMessage]:
 def parse_reaction(body: dict) -> Optional[InboundReaction]:
     """Return an InboundReaction for 'reaction.added' / 'reaction.removed', else None.
 
-    Our own tapbacks echo back as events with `is_from_me: true` — §5.1 puts a
-    👍 on every inbound message, so without this guard every acknowledgement we
-    send would immediately re-enter as a user command.
+    Our own tapbacks echo back as events with `is_from_me: true` — §5.1 sends ❗
+    on a bluff and ❤️ on a close, so without this guard every tapback we send
+    would immediately re-enter as a user command.
     """
     if not isinstance(body, dict):
         return None

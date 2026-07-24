@@ -541,18 +541,17 @@ one buys, ordered by ratio of demo impact to build time.
 The problem: research takes ~30s and an LLM turn takes ~3s. In iMessage, three
 seconds of nothing feels broken.
 
-The fix costs one API call and is the highest-impact item on this list. The
-instant a message lands, before any inference runs, react to it:
+The fix is the typing indicator (§5.3), held for the whole turn. Tapbacks carry
+*meaning* on top of it, once the turn has resolved and we know what we thought:
 
 | Reaction on the user's message | Means |
 |---|---|
-| 👍 `like` | Logged it, working |
 | ❗ `emphasize` | Bluff detected in that message |
-| ❓ `question` | Couldn't parse — a clarifying question is coming |
 | ❤️ `love` | That was the message that closed the deal |
 
-The user gets sub-second feedback that the agent is alive and *what it thought*,
-before a single token is generated. Nothing else on this list is as cheap.
+Deliberately **no blanket 👍 read receipt on every inbound.** "We got your
+message" is already what the typing indicator says, and a tapback on literally
+every message is wallpaper — it makes the two that mean something invisible.
 
 ### 5.2 Tapbacks as an input channel — this is the novel one
 
@@ -788,7 +787,7 @@ the update.
 ```
  1. Text "hey" to +12052611117 from a phone that has never texted it
                                      → onboarding message, account exists
- 2. Text a Camry listing link        → 👍 tapback, typing, research trace,
+ 2. Text a Camry listing link        → typing, research trace,
                                         valuation card
  3. Marcus texts "6,400 firm, I've got two other people coming"
     Relay it                         → ❗ tapback, coach reply, offer in its
@@ -1131,8 +1130,8 @@ A stranger, on their own phone, without you touching anything:
 
 1. Scans the QR on the slide. Messages opens with the number and a draft. Sends.
 2. Gets a reply that explains what Closer does in two sentences.
-3. Texts a real used-car listing link. Sees a 👍 tapback immediately, a typing
-   indicator, the research trace streaming in, then a valuation with sources.
+3. Texts a real used-car listing link. Sees a typing indicator immediately, the
+   research trace streaming in, then a valuation with sources.
 4. Relays what the seller said — typed, pasted, or screenshotted — and gets one
    specific number to send back, every time, in its own bubble.
 5. Texts "card" and sees the seller's floor estimate move turn by turn, and sees

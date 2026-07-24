@@ -232,13 +232,30 @@ def test_table_is_big_enough() -> None:
 
 # ── images ───────────────────────────────────────────────────────────────────
 @pytest.mark.parametrize("text", [None, "", "deals", "stats", "we have a deal",
-                                  "https://cars.com/x", "help"])
+                                  "help", "why", "5,400", "what do I say to this"])
 def test_an_image_is_always_a_relay(text: str | None) -> None:
     """A screenshot is evidence about a seller, never a command — even when the
     caption looks exactly like one."""
     got = classify(text, has_image=True)
     assert got.intent is Intent.RELAY
     assert got.why == "image"
+
+
+@pytest.mark.parametrize("text", [
+    "https://cars.com/x",
+    "$6,400 · 2008 Toyota Camry LE https://facebook.com/marketplace/item/1",
+])
+def test_a_link_beats_an_image(text: str) -> None:
+    """The one exception, and it is the URL rule, not an image rule (§7 A2).
+
+    A Marketplace share sheet attaches the listing photo alongside the link. If
+    the image short-circuit won, that paste would land as a relay on a deal with
+    no listing — and research would never run on the car the user just sent.
+    """
+    got = classify(text, has_image=True)
+    assert got.intent is Intent.NEW
+    assert got.url == "https://cars.com/x" or got.url.startswith("https://facebook.com")
+    assert got.why == "url+image"
 
 
 # ── the bare-integer guard, the rule most likely to misfire ──────────────────

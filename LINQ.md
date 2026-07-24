@@ -12,7 +12,7 @@ affordances below are load-bearing features, not decoration:
 | `sender_handle.handle` on inbound | **The auth system.** `user_id = "phone:+1205…"`. No signup, no login. |
 | `webhooks listen --forward-to` | Inbound over an outbound connection — **no tunnel, no public URL, no inbound port** |
 | `chats typing` | Bracket research (~30s) and every LLM turn, so waiting reads as thinking |
-| `messages react` (outbound) | Sub-second acknowledgement before inference runs: 👍 logged, ❗ bluff spotted, ❓ couldn't parse |
+| `messages react` (outbound) | Meaning, not a read receipt: ❗ bluff spotted, ❤️ deal closed. No blanket 👍 on every inbound — the typing indicator already says "we got it" |
 | tapbacks (inbound) | A two-tap negotiation loop: 👍 "sent it", 👎 "different number", ❓ "explain the math" |
 | `messages send --effect` | `confetti` on close, `fireworks` on a new best, `slam` on a walk. Three per demo, no more. |
 | `attachments upload` | The deal card as a real chart — the seller's floor collapsing turn by turn |

@@ -15,8 +15,17 @@ From which the negotiation inputs are derived:
 
 The loop
 --------
-Step 0 (deterministic, always): fetch the listing URL and strip it to text. That
-text seeds the transcript, so even a zero-tool run has real facts to work from.
+Step 0 (deterministic): fetch the listing URL and strip it to text. That text
+seeds the transcript, so even a zero-tool run has real facts to work from.
+
+A link is not required. Half the cars a buyer looks at are unlinkable — a
+Craigslist page behind a login, a windshield sign, a friend of a friend — so
+`run_research` also takes a plain-English description ("2008 Toyota Camry LE,
+128k miles, he wants $6,400"). Then step 0 is the description itself and the
+agent searches its way to the vehicle instead of reading a page. Everything
+downstream (`to_valuation`, `research_summary`, the cards) is identical; the
+only difference is that comps have to come entirely from search, so confidence
+is capped at "med" — see `_DESCRIPTION_CONF_CAP`.
 
 Then up to RESEARCH_MAX_STEPS iterations of:
     model -> {"tool": "web_search", "query": "..."}   -> top-N {title, url, snippet}
@@ -408,6 +417,10 @@ You work in a loop. Each turn respond with ONLY a JSON object, one of:
    "reasoning": "<2-3 sentences a buyer could repeat to the seller>"}
 
 Rules:
+- If there is no listing URL, the buyer described the car in their own words. Work from that
+  description plus web search: pin down year/make/model/trim/mileage/condition from what they
+  said, search for the asking price only if they gave one, and never invent listing details they
+  did not state. Say in `reasoning` that you worked from their description.
 - Research plan: (1) nail the exact vehicle from the listing, (2) find private-party comps for that
   year/trim/mileage, (3) check known problems / maintenance due at this mileage, (4) price the
   deferred work. Prefer valuation guides and live comparable listings over forums.
@@ -513,6 +526,46 @@ def _blocked_payload(link: str, error: str) -> dict:
     }
 
 
+def valuation_from_asking(asking: float, *, title: Optional[str] = None,
+                          source: str = "a screenshot") -> dict:
+    """A usable valuation from an asking price and nothing else.
+
+    The path a deal takes when there is no listing link to research: the user
+    photographed the thread (or the listing) instead of pasting a URL, so we have
+    a number and a name and no page to fetch. Same conservative haircut as
+    `recompute_with_asking`, because it is the same situation — a price with no
+    comps — and it is labelled `low` confidence for exactly that reason.
+
+    Not a replacement for `run_research`. A link always beats this; `main.py`
+    reaches for it only when there is no link to reach for.
+    """
+    payload = _blocked_payload("", f"no listing link — read from {source}")
+    payload = recompute_with_asking(payload, asking)
+    facts = dict(payload.get("facts") or {})
+    if title:
+        parts = str(title).split()
+        if parts and re.fullmatch(r"(19|20)\d{2}", parts[0]):
+            facts["year"] = int(parts[0])
+            parts = parts[1:]
+        if parts:
+            facts["make"] = parts[0]
+        if len(parts) > 1:
+            facts["model"] = parts[1]
+        if len(parts) > 2:
+            facts["trim"] = " ".join(parts[2:])
+    payload["facts"] = facts
+    payload["sources"] = [{"title": title or "screenshot", "url": "",
+                           "note": f"read from {source} — no listing page was available"}]
+    payload["reasoning"] = (
+        f"No listing link, so fair value is an 11% haircut off the ${asking:,.0f} "
+        f"asking price I read off {source} — the typical private-party gap between "
+        f"list and transaction price. Low confidence: no comps were read. Send me "
+        f"the listing link any time and I'll redo this properly.")
+    payload["steps"] = [{"tool": "screenshot", "arg": title or "",
+                         "note": f"valuation seeded from {source}", "thought": ""}]
+    return payload
+
+
 def recompute_with_asking(payload: dict, asking: float) -> dict:
     """Turn a `blocked` payload into a real valuation once the user tells us asking.
 
@@ -542,8 +595,39 @@ def recompute_with_asking(payload: dict, asking: float) -> dict:
     return out
 
 
+#: Confidence ceiling for a run with no listing page. The buyer's sentence is
+#: not a document: nothing corroborates the mileage, the trim, or the condition,
+#: so "high" is a claim the evidence can't carry no matter how good the comps
+#: were. Capping it here rather than in the prompt makes it a property of the
+#: run instead of a request the model can decline.
+_DESCRIPTION_CONF_CAP = "med"
+
+_CONF_RANK = {"low": 0, "med": 1, "high": 2}
+
+
+def _is_url(s: Optional[str]) -> bool:
+    return bool(re.match(r"^https?://", (s or "").strip(), re.I))
+
+
+def parse_asking(text: Optional[str]) -> Optional[float]:
+    """First price in `text` as a float, or None. `6.4k` -> 6400.0.
+
+    Deliberately its own function rather than an import from `intent`: research
+    runs standalone (`python -m app.research`) and in the Vercel task path, and
+    a valuation module that cannot start without the router is a worse module.
+    """
+    m = re.search(r"\$\s?(\d{1,3}(?:,\d{3})+|\d{3,6})(?:\.\d+)?\b"
+                  r"|\b(\d{1,3}(?:\.\d+)?)\s?k\b", text or "", re.I)
+    if not m:
+        return None
+    if m.group(1):
+        return float(m.group(1).replace(",", ""))
+    return float(m.group(2)) * 1000
+
+
 def _normalize(payload: dict, link: str, asking: Optional[float],
-               steps: list[dict]) -> dict:
+               steps: list[dict], *, conf_cap: Optional[str] = None,
+               description: str = "") -> dict:
     """Coerce a model payload into the contract, clamp nonsense, attach the trace."""
     facts = dict(payload.get("facts") or {})
     ask = float(facts.get("asking") or asking or 0) or 0.0
@@ -575,6 +659,8 @@ def _normalize(payload: dict, link: str, asking: Optional[float],
         conf = "low"
     if not sources and conf == "high":             # no citations, no high confidence
         conf = "med"
+    if conf_cap and _CONF_RANK[conf] > _CONF_RANK.get(conf_cap, 2):
+        conf = conf_cap                            # no listing page, no "high"
 
     out = {
         "fair_value": round(fair, 2),
@@ -587,6 +673,8 @@ def _normalize(payload: dict, link: str, asking: Optional[float],
         "steps": steps,
         "listing_link": link,
     }
+    if description:
+        out["listing_description"] = description[:600]
     # The blocked marker has to survive normalization — it is what keeps a deal
     # with no asking price answerable instead of silently stuck at V=0.
     if payload.get("blocked"):
@@ -595,14 +683,27 @@ def _normalize(payload: dict, link: str, asking: Optional[float],
     return out
 
 
-def run_research(link: str, *, asking: Optional[float] = None,
+def run_research(link: str = "", *, asking: Optional[float] = None,
+                 description: str = "",
                  max_steps: Optional[int] = None,
                  on_step: Optional[Callable[[dict], None]] = None) -> dict:
-    """Research one listing and return the valuation payload. Never raises.
+    """Research one car and return the valuation payload. Never raises.
+
+    Two entry points, one loop:
+      • `link` — a listing URL. Step 0 fetches it; the agent works from the page.
+      • `description` — the buyer's own words, when there is no link to fetch.
+        Step 0 is the sentence itself and every fact after it comes from search.
+
+    Passing a non-URL string as `link` is treated as a description, so the older
+    positional call site (`run_research(text)`) keeps working either way.
 
     `on_step(step)` is called after every tool call with
     {"tool", "arg", "note", "thought"} so the dashboard can stream the trace live.
     """
+    link = (link or "").strip()
+    description = (description or "").strip()
+    if link and not _is_url(link):                 # someone passed words as `link`
+        description, link = (description or link), ""
     steps: list[dict] = []
 
     def record(tool: str, arg: str, note: str, thought: str = "") -> None:
@@ -614,39 +715,68 @@ def run_research(link: str, *, asking: Optional[float] = None,
             except Exception:  # noqa: BLE001 — a bad callback can't break research
                 pass
 
+    conf_cap = _DESCRIPTION_CONF_CAP if not link else None
+
     if RESEARCH_MODE == "mock":
-        payload = dict(_mock_payload(link))
+        payload = dict(_mock_payload(link or description))
         for s in payload["steps"]:
             record(s["tool"], s["arg"], s["note"])
-        return _normalize(payload, link, asking or payload["facts"]["asking"], steps)
+        return _normalize(payload, link, asking or payload["facts"]["asking"], steps,
+                          conf_cap=conf_cap, description=description)
 
     deadline = time.monotonic() + RESEARCH_WALL_S
 
-    # Step 0 — always read the listing itself.
-    listing = fetch_page(link)
-    record("fetch_page", link,
-           listing["error"] or f"{len(listing['text'])} chars of listing text")
-    listing_text = listing["text"]
+    if link:
+        # Step 0 with a link — always read the listing itself.
+        listing = fetch_page(link)
+        record("fetch_page", link,
+               listing["error"] or f"{len(listing['text'])} chars of listing text")
+        listing_text, listing_err = listing["text"], listing["error"]
+    else:
+        # Step 0 without one — the buyer's sentence IS the evidence, and any
+        # price in it is the asking price unless the caller already knew better.
+        listing_text, listing_err = description, None
+        asking = asking or parse_asking(description)
+        record("description", description[:200],
+               f"working from the buyer's description ({len(description)} chars)")
 
-    # The listing refused us and nobody told us the price. Don't guess a
-    # valuation off nothing — ask. (§7 A4)
+    # Nothing to read and nobody told us the price. Don't guess a valuation off
+    # nothing — ask. (§7 A4)
     if not listing_text.strip() and not asking:
-        record("blocked", link, listing["error"] or "listing unreadable")
-        return _normalize(_blocked_payload(link, listing["error"]), link, None, steps)
+        record("blocked", link, listing_err or "nothing to research")
+        return _normalize(_blocked_payload(link, listing_err), link, None, steps)
 
     if not runware.available():
         payload = _heuristic_payload(listing_text, link, asking)
+        if not link:
+            payload["sources"] = []
+            payload["reasoning"] = (
+                "Offline valuation: no research tools were available and there was no "
+                "listing page to read, so fair value is an 11% haircut off the asking "
+                "price in your description (the typical private-party list-to-sale gap). "
+                "Treat this as a floor on confidence, not on price.")
         payload["steps"] = steps + payload["steps"]
-        return _normalize(payload, link, asking, payload["steps"])
+        return _normalize(payload, link, asking, payload["steps"],
+                          conf_cap=conf_cap, description=description)
 
     budget = max_steps or RESEARCH_MAX_STEPS
+    if link:
+        evidence = (f"Listing URL: {link}\n"
+                    f"Buyer-reported asking price: {asking if asking else 'unknown'}\n\n"
+                    f"Listing page text (may be truncated or blocked):\n"
+                    f"{listing_text or '(the listing page could not be read: ' + str(listing_err) + ')'}")
+    else:
+        evidence = (f"Listing URL: none — the buyer has no link.\n"
+                    f"Buyer-reported asking price: {asking if asking else 'unknown'}\n\n"
+                    f"The buyer described the car like this:\n"
+                    f"{listing_text}\n\n"
+                    f"There is no page to fetch for this car. Identify it and value it from "
+                    f"web search: comps, valuation guides, and known problems at this "
+                    f"mileage. Do not invent details the buyer did not give you.")
     messages = [
         {"role": "system", "content": _SYSTEM.replace("$MAX_STEPS", str(budget))},
         {"role": "user", "content":
-            f"Listing URL: {link}\n"
-            f"Buyer-reported asking price: {asking if asking else 'unknown'}\n\n"
-            f"Listing page text (may be truncated or blocked):\n"
-            f"{listing_text or '(the listing page could not be read: ' + str(listing['error']) + ')'}\n\n"
+            f"{evidence}\n\n"
             f"Begin. Respond with ONLY the JSON for your next action."},
     ]
 
@@ -670,7 +800,8 @@ def run_research(link: str, *, asking: Optional[float] = None,
 
         if tool == "finish":
             record("finish", "", f"confidence {action.get('confidence')}", thought)
-            return _normalize(action, link, asking, steps)
+            return _normalize(action, link, asking, steps,
+                              conf_cap=conf_cap, description=description)
 
         if tool == "web_search":
             q = str(action.get("query") or "")
@@ -702,7 +833,8 @@ def run_research(link: str, *, asking: Optional[float] = None,
     payload = _heuristic_payload(listing_text, link, asking)
     payload["reasoning"] = ("Research ran out of steps before converging; falling back to a "
                             "conservative haircut off asking. " + payload["reasoning"])
-    return _normalize(payload, link, asking, steps + payload["steps"])
+    return _normalize(payload, link, asking, steps + payload["steps"],
+                      conf_cap=conf_cap, description=description)
 
 
 # ── Downstream contract (unchanged from the expert era) ──────────────────────
@@ -749,10 +881,12 @@ def research_summary(payload: dict) -> str:
 if __name__ == "__main__":
     import sys
 
-    url = sys.argv[1] if len(sys.argv) > 1 else "https://example.com/2019-mazda-cx-5"
+    # A URL researches the listing; anything else is a description and the agent
+    # searches its way to the car. `python -m app.research "2008 Camry, 128k, $6400"`
+    arg = " ".join(sys.argv[1:]) or "https://example.com/2019-mazda-cx-5"
     print(f"mode={RESEARCH_MODE} runware={'yes' if runware.available() else 'no'} "
-          f"search={SEARCH_PROVIDER}\n")
-    out = run_research(url, on_step=lambda s: print(
+          f"search={SEARCH_PROVIDER} input={'url' if _is_url(arg) else 'description'}\n")
+    out = run_research(arg, on_step=lambda s: print(
         f"  [{s['tool']}] {s['arg'][:70]!r} -> {s['note']}"))
     print("\n" + json.dumps(out, indent=2)[:2500])
     print("\nvaluation:", to_valuation(out))
