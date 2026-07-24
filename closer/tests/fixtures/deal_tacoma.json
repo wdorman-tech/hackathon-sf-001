@@ -1,9 +1,10 @@
 {
-  "id": "0b62e4d84d78",
+  "id": "92402ec0be17",
   "user_id": "phone:+12055550100",
   "chat_id": null,
   "phone": "+12055550100",
   "title": "2012 Toyota Tacoma SR5",
+  "nickname": null,
   "listing_link": "https://www.craigslist.org/sfo/cto/d/2012-tacoma/7712.html",
   "state": "WALKED",
   "research": {
@@ -408,7 +409,7 @@
     },
     {
       "role": "closer",
-      "text": "Smart \u2014 better than overpaying. Logged as walked. Text a new listing link whenever you want to run another.",
+      "text": "\ud83d\udeb6 Logged as walked.\n$800 over fair value at the end \u2014 better than owning that.\n\nText a new listing link whenever you want to run another.",
       "ts": 1752712360.0,
       "signals": null,
       "recommendation": null
@@ -627,6 +628,7 @@
     "rationale": "Counter $10,631: ~66% chance they take it, and their floor reads around $10,578.",
     "coach_message": "Counter $10,631 and hold there. Their floor reads ~$10,578, so there's ~66% they take $10,631.\n\nSend this: \"$10,631, cash, I can do it today. That's my number.\""
   },
+  "closed_price": null,
   "created_at": 1752712000.0,
   "updated_at": 1752712360.0
 }

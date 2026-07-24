@@ -35,7 +35,7 @@ from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import FileResponse, HTMLResponse  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
-from app import demo, linq, llm, research, runware  # noqa: E402
+from app import cards, demo, intent, linq, llm, research, runware  # noqa: E402
 from app import store as store_mod  # noqa: E402
 from app.auth import DEV_USER_ID, clerk_enabled, require_user  # noqa: E402
 from app.state import Deal, DealState, user_id_for  # noqa: E402
@@ -47,11 +47,21 @@ DEMO_MODE = os.getenv("DEMO_MODE", "").lower() in ("1", "true", "yes")
 CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()] or ["*"]
 
 URL_RE = re.compile(r"https?://\S+")
-CLOSE_KW = ("deal", "we have a deal", "done deal", "sold", "i'll take it", "i will take it",
-            "took it", "bought it", "picked it up", "we agreed", "closing at", "closed at",
-            "it's a deal", "its a deal")
-WALK_KW = ("walked", "i walked", "i passed", "passed on it", "walk away", "walked away",
-           "no deal", "moving on", "found another", "backed out")
+
+# §3 abuse limits. There is no signup gate, so these are the only gate — and
+# they protect Runware credit more than they protect us. Both counters are
+# per-`user_id` and both live in the store, so a restart does not reset them.
+MAX_ACTIVE_DEALS = 10
+MAX_INBOUND_PER_MINUTE = 20
+RATE_WINDOW = 60.0
+
+# A listener that has died is a silent outage: texts vanish with no error. The
+# webhook stamps every event it receives, `/health/inbound` reports the age, and
+# a supervisor (or a human) treats "stale" as "restart `linq webhooks listen`".
+INBOUND_STALE_SECONDS = float(os.getenv("INBOUND_STALE_SECONDS", "900"))
+_INBOUND = {"events": 0, "messages": 0, "ignored": 0,
+            "last_event_ts": None, "last_message_ts": None, "last_sender": None,
+            "started_at": time.time()}
 
 app = FastAPI(title="Closer API", version="1.0")
 app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS,
@@ -106,19 +116,15 @@ def _floor_map(rec: dict) -> dict:
             "p": [round(float(x), 6) for x in (fm or [])]}
 
 
-def _detect_outcome(text: Optional[str], asking: float) -> Optional[str]:
-    """A short confirmation ('deal' / 'i walked') with no NEW price = deal outcome.
-    A message that quotes a price is a relayed seller offer → classify it instead."""
-    if not text:
-        return None
-    if llm.extract_price(text, asking) is not None:
-        return None
-    low = text.lower()
-    if any(k in low for k in WALK_KW):
-        return "walked"
-    if any(k in low for k in CLOSE_KW):
-        return "closed"
-    return None
+def _awaiting_asking(deal: Deal) -> bool:
+    """§7 A4: the listing 403'd and we asked "what are they asking?".
+
+    The one documented case where a bare integer is NOT a list index — so it is
+    read off the deal and handed to `intent.classify`. `research.py` sets the
+    marker when it lands A4; until then this is always False and the grammar
+    behaves exactly as §4.1 describes.
+    """
+    return bool((deal.research or {}).get("blocked"))
 
 
 # ── research kickoff (background thread on a long-running host; the /tasks cron
@@ -203,63 +209,275 @@ def _process_seller_turn(deal: Deal, seller_text: Optional[str],
     return coach
 
 
+# ── UNDO (§4.1) ──────────────────────────────────────────────────────────────
+def _undo(deal: Deal) -> bool:
+    """Pop the last seller turn and replay. Returns False if there is none.
+
+    `signals_log` is the source of truth and `Deal.belief()` reconstructs the
+    posterior from it, so undo is: drop the last signal, drop the turns it
+    produced, and restore the recommendation that was live before it. The
+    previous turn's `recommendation` IS that replay — it was computed from
+    exactly the signals that remain — so it is restored verbatim rather than
+    recomputed against a threaded offer that has since moved on.
+    """
+    if not deal.signals_log:
+        return False
+    deal.signals_log.pop()
+    while deal.feed and deal.feed[-1].role != "seller":
+        deal.feed.pop()                                # the coach reply, plus any chatter
+    if deal.feed:
+        deal.feed.pop()                                # the seller turn itself
+
+    prices = [s.get("seller_price") for s in deal.signals_log
+              if s.get("seller_price") is not None]
+    deal.last_seller_price = float(prices[-1]) if prices else None
+
+    # Re-thread the offer exactly the way `_process_seller_turn` threads it
+    # forward: the last COUNTER among the surviving recommendations.
+    recs = [t.recommendation for t in deal.feed if t.recommendation]
+    offer = None
+    for rec in recs:
+        if rec.get("action") == "COUNTER":
+            offer = rec.get("offer")
+    deal.last_user_offer = offer
+
+    if recs:
+        coach = next((t.text for t in reversed(deal.feed) if t.role == "closer"), "")
+        deal.snapshot = _snapshot(deal, recs[-1], coach)
+    else:
+        deal.snapshot = None
+    return True
+
+
 # ── the router (shared by webhook / simulate) ────────────────────────────────
-def route_message(deal: Deal, text: Optional[str], media: list[str], *,
-                  send: bool, research_bg: bool = True) -> str:
-    """Advance a deal by one inbound message; return Closer's reply text."""
-    to = deal.phone
+def _real_deals(user_id: str) -> list[Deal]:
+    """Deals worth showing the user.
 
-    def out(msg: str, log: bool = True) -> str:
-        if log:
-            deal.log_turn("closer", msg)
-        if send and to and linq.available():
-            try:
-                linq.send(to, msg)
-            except Exception:
-                pass
-        return msg
+    A first text from a new phone creates an empty shell (`_inbound_deal`) so
+    onboarding has something to hang on. It is not a deal until it has a link
+    or a turn, and listing it as one makes "deals" lie on message one.
 
-    if deal.state == DealState.AWAITING_LINK:
-        url = _find_url(text)
-        if url:
-            _start_research(deal, url, background=research_bg)
-            return out("On it — researching this car and the comps now. Give me ~30s. 🔎")
-        STORE.save_deal(deal)
-        return out("Send me the used-car listing link and I'll research it, then coach every "
-                   "counter so you don't overpay.")
+    Ordered oldest-first, deliberately against the store's recency sort. The
+    list card's numbers ARE the switch grammar (§4.1), and a number that means
+    a different car depending on which deal you last touched is a trap in a
+    medium with no undo — "1" is your first deal, permanently.
+    """
+    deals = [d for d in STORE.list_deals(user_id) if d.listing_link or d.feed]
+    return sorted(deals, key=lambda d: d.created_at)
 
-    if deal.state == DealState.AWAITING_RESEARCH:
-        return out("Still digging into comps — one sec.", log=False)
 
-    if deal.state == DealState.NEGOTIATING:
-        outcome = _detect_outcome(text, deal.asking or 16000.0)
-        if outcome == "closed":
-            price = deal.last_user_offer or deal.last_seller_price or 0
-            deal.state = DealState.CLOSED
-            # Freeze the price now. The stats card sums it across every closed
-            # deal, so it must not be re-derived later from a log that UNDO
-            # could change out from under it.
-            deal.closed_price = float(price)
-            STORE.save_deal(deal)
-            under = int((deal.asking or 0) - price)
-            tail = f" — ${under:,} under ask" if under > 0 else ""
-            return out(f"🤝 Closed at ${int(price):,}{tail}. Great work.")
-        if outcome == "walked":
-            deal.state = DealState.WALKED
-            STORE.save_deal(deal)
-            return out("Smart — better than overpaying. Logged as walked. "
-                       "Text a new listing link whenever you want to run another.")
+def _switch_pool(user_id: str, meta: dict) -> list[Deal]:
+    """Deals in the order the user last saw them.
+
+    `resolve_switch`'s index tier resolves against the ordering of the last LIST
+    card, so "1" means what it looked like it meant — not what the most-recent
+    sort happens to say a minute later.
+    """
+    deals = _real_deals(user_id)
+    ids = meta.get("last_list") or []
+    if not ids:
+        return deals
+    by_id = {d.id: d for d in deals}
+    ordered = [by_id[i] for i in ids if i in by_id]
+    seen = {d.id for d in ordered}
+    return ordered + [d for d in deals if d.id not in seen]
+
+
+def _start_new_deal(deal: Deal, url: Optional[str], *, parked: Optional[Deal],
+                    research_bg: bool) -> tuple[str, Optional[str], Optional[list]]:
+    """A listing link ALWAYS starts a deal and takes focus (§7 A2).
+
+    The webhook path has already done this in `_inbound_deal` and hands the new
+    shell straight through; every other caller (`/simulate`, the demo runbook)
+    arrives with a deal that may already be running, so the split happens here
+    too. One rule, two entry points, no way to fold a link into a live deal.
+    """
+    if not url:
+        return cards.not_negotiating(deal), None, None
+
+    target = deal
+    if deal.listing_link or deal.state is not DealState.AWAITING_LINK:
+        parked = parked or (deal if deal.is_active() else None)
+        target = _new_deal(deal.user_id, deal.chat_id, deal.phone)
+    else:
+        STORE.set_focus(deal.user_id, deal.id)
+
+    # Log the acknowledgement BEFORE kicking research off. `_do_research` — on a
+    # thread or inline — reloads the deal from the store and writes the valuation
+    # back, so anything saved from this stale reference afterwards silently
+    # overwrites it. Mock research finishes in microseconds and loses that race
+    # every time; live research loses it whenever a page is cached.
+    msg = cards.deal_parked(target, parked) if parked is not None else cards.research_started(url)
+    target.log_turn("closer", msg)
+    STORE.save_deal(target)
+    _start_research(target, url, background=research_bg)
+    return msg, None, None
+
+
+def _relay(deal: Deal, text: Optional[str], media: list[str]) -> tuple[str, Optional[str], None]:
+    """One negotiation turn — the ~90% case (§4.1)."""
+    if deal.state is DealState.NEGOTIATING:
         coach = _process_seller_turn(deal, text, media[0] if media else None)
         STORE.save_deal(deal)
-        if coach is None:
-            return out("Didn't catch a seller message — paste their text, or a screenshot "
-                       "of your chat with them.")
-        return out(coach, log=False)   # _process_seller_turn already logged the closer turn
+        return (coach or cards.unparsed()), None, None
+    if deal.state is DealState.AWAITING_LINK and not deal.listing_link:
+        return cards.onboarding(), None, None
+    return cards.not_negotiating(deal), None, None
 
-    # CLOSED / WALKED. A listing link never lands here — `_inbound_deal` starts a
-    # fresh deal for it. Closed deals are the stats card's data; the old branch
-    # that wiped one to recycle the record destroyed the headline number.
-    return out("This deal's wrapped. Send a new listing link to start another.")
+
+_AFFIRM = {"yes", "y", "yeah", "yep", "yup", "sure", "ok", "okay", "do it",
+           "confirm", "delete it", "go ahead", "kill it"}
+
+
+def _affirmative(text: Optional[str]) -> bool:
+    return (text or "").strip().strip(" \t\n.,!?…:;-–—\"'").lower() in _AFFIRM
+
+
+def _dispatch(deal: Deal, text: Optional[str], media: list[str], meta: dict, *,
+              research_bg: bool, parked: Optional[Deal]) -> tuple[str, Optional[str], Optional[list]]:
+    """One branch per `Intent` (§7 A5). Returns (reply, card_kind, listed_ids).
+
+    `card_kind` is what this reply teaches the *next* message — it gates the
+    bare-integer SWITCH rule. `listed_ids` is the ordering a number resolves
+    against, and is None when the reply changed neither.
+    """
+    user_id = deal.user_id
+    Kind = intent.Intent
+
+    # A held DELETE confirmation short-circuits the grammar: "yes" is a RELAY,
+    # and it must not become one while we are holding a question open (§4.1
+    # "confirm first"). Anything that is not a yes cancels and routes normally.
+    pending = meta.pop("pending_delete", None)
+    if pending and _affirmative(text):
+        target = STORE.get_deal(pending)
+        if target is not None and target.user_id == user_id:
+            name = target.display_name()
+            STORE.delete_deal(target.id)
+            if STORE.get_focus(user_id) == target.id:
+                left = STORE.list_deals(user_id)
+                STORE.set_focus(user_id, left[0].id if left else "")
+            return cards.deleted(name), None, None
+
+    c = intent.classify(text, has_image=bool(media),
+                        last_card_kind=meta.get("last_card_kind"),
+                        awaiting_asking=_awaiting_asking(deal))
+
+    if c.intent is Kind.NEW:
+        return _start_new_deal(deal, c.url or _find_url(text),
+                               parked=parked, research_bg=research_bg)
+
+    if c.intent is Kind.HELP:
+        return cards.help_card(), "help", None
+
+    if c.intent is Kind.LIST:
+        deals = _real_deals(user_id)
+        if not deals:
+            return cards.no_deals(), None, []
+        return cards.deal_list(deals, STORE.get_focus(user_id)), "list", [d.id for d in deals]
+
+    if c.intent is Kind.STATS:
+        deals = _real_deals(user_id)
+        return (cards.stats_card(deals) if deals else cards.no_deals()), "stats", None
+
+    if c.intent is Kind.SWITCH:
+        pool = _switch_pool(user_id, meta)
+        if not c.arg:                                  # bare "/switch" — show the board
+            if not pool:
+                return cards.no_deals(), None, []
+            return cards.deal_list(pool, STORE.get_focus(user_id)), "list", [d.id for d in pool]
+        if c.why == "bare-index":
+            # A number typed at a numbered list is an index, full stop. Running
+            # it through the §4.1 name tiers first lets it match a *title* —
+            # every "2019 Mazda CX-5" contains a 1, a 2, a 5 and a 9 — and the
+            # cheapest context switch in the product turns into a disambiguation
+            # prompt against two identical-looking rows.
+            i = int(c.arg)
+            target = pool[i - 1] if 1 <= i <= len(pool) else None
+            candidates = []
+        else:
+            target, candidates = intent.resolve_switch(c.arg, pool)
+        if target is not None:
+            STORE.set_focus(user_id, target.id)
+            return f"{cards.switched(target)}\n\n{cards.deal_card(target)}", "deal", None
+        if candidates:
+            return (cards.ambiguous_switch(c.arg, candidates), "list",
+                    [d.id for d in candidates])
+        return cards.no_match(c.arg), None, None
+
+    if c.intent is Kind.CARD:
+        return cards.deal_card(deal), "deal", None
+
+    if c.intent is Kind.CLOSE:
+        if deal.state is not DealState.NEGOTIATING:
+            return cards.not_negotiating(deal), None, None
+        deal.state = DealState.CLOSED
+        # Freeze the price now. The stats card sums it across every closed deal,
+        # so it must not be re-derived later from a log UNDO could change.
+        deal.closed_price = float(deal.last_user_offer or deal.last_seller_price or 0)
+        msg = cards.closed_message(deal)
+        deal.log_turn("closer", msg)
+        STORE.save_deal(deal)
+        return msg, None, None
+
+    if c.intent is Kind.WALK:
+        if deal.state is not DealState.NEGOTIATING:
+            return cards.not_negotiating(deal), None, None
+        deal.state = DealState.WALKED
+        msg = cards.walked_message(deal)
+        deal.log_turn("closer", msg)
+        STORE.save_deal(deal)
+        return msg, None, None
+
+    if c.intent is Kind.UNDO:
+        if not _undo(deal):
+            return cards.nothing_to_undo(), None, None
+        STORE.save_deal(deal)
+        return cards.undone(deal), None, None
+
+    if c.intent is Kind.RENAME:
+        if not c.arg:
+            return cards.help_card(), "help", None
+        deal.nickname = c.arg
+        STORE.save_deal(deal)
+        return cards.renamed(deal), None, None
+
+    if c.intent is Kind.DELETE:
+        if not c.arg:
+            return cards.help_card(), "help", None
+        target, candidates = intent.resolve_switch(c.arg, _switch_pool(user_id, meta))
+        if target is not None:
+            meta["pending_delete"] = target.id
+            return cards.confirm_delete(target), None, None
+        if candidates:
+            return (cards.ambiguous_switch(c.arg, candidates), "list",
+                    [d.id for d in candidates])
+        return cards.no_match(c.arg), None, None
+
+    return _relay(deal, text, media)
+
+
+def route_message(deal: Deal, text: Optional[str], media: list[str], *,
+                  send: bool, research_bg: bool = True,
+                  parked: Optional[Deal] = None) -> str:
+    """Advance a deal by one inbound message; return Closer's reply text.
+
+    Contract unchanged for `/simulate`, the dashboard relay and the demo
+    runbook — `parked` is additive and only the webhook sets it.
+    """
+    meta = STORE.get_user_meta(deal.user_id)
+    reply, kind, listed = _dispatch(deal, text, media, meta,
+                                    research_bg=research_bg, parked=parked)
+    meta["last_card_kind"] = kind
+    if listed is not None:
+        meta["last_list"] = listed
+    STORE.set_user_meta(deal.user_id, meta)
+
+    if send and deal.phone and linq.available():
+        try:
+            linq.send(deal.phone, reply)
+        except Exception:
+            pass
+    return reply
 
 
 # ── who is this, and which of their deals are we talking about ───────────────
@@ -335,18 +553,64 @@ def _inbound_deal(user_id: str, chat_id: Optional[str], phone: Optional[str],
     return _adopt(focused, chat_id, phone), None
 
 
+def _send_now(phone: Optional[str], msg: str) -> None:
+    if phone and linq.available():
+        try:
+            linq.send(phone, msg)
+        except Exception:
+            pass
+
+
+def _rate_check(user_id: str, now: Optional[float] = None) -> tuple[bool, bool]:
+    """§3: 20 inbound messages per phone per minute. Returns (allowed, notify).
+
+    The reply itself is rate-limited too — a throttled user who keeps typing
+    gets one polite line per window, not twenty.
+    """
+    now = now if now is not None else time.time()
+    meta = STORE.get_user_meta(user_id)
+    times = [t for t in (meta.get("msg_times") or []) if now - t < RATE_WINDOW]
+    times.append(now)
+    meta["msg_times"] = times[-(MAX_INBOUND_PER_MINUTE * 2):]
+    over = len(times) > MAX_INBOUND_PER_MINUTE
+    notify = over and (now - float(meta.get("throttled_at") or 0.0)) >= RATE_WINDOW
+    if notify:
+        meta["throttled_at"] = now
+    STORE.set_user_meta(user_id, meta)
+    return (not over), notify
+
+
+def _at_deal_limit(user_id: str) -> bool:
+    """§3: 10 running deals per phone. Closed and walked deals don't count —
+    they are the stats card's data, not load."""
+    return sum(1 for d in STORE.list_deals(user_id) if d.is_active()) >= MAX_ACTIVE_DEALS
+
+
 def _process_inbound(inb: linq.InboundMessage) -> str:
     user_id = _resolve_user(inb.sender)
     phone = inb.sender
-    deal, parked = _inbound_deal(user_id, inb.chat_id, phone, inb.text)
-    reply = route_message(deal, inb.text, inb.media_urls, send=True, research_bg=True)
-    if parked is not None and phone and linq.available():
-        # Copy is Dev 2's at Sync 1; the behaviour is what matters here.
-        try:
-            linq.send(phone, f"(Parked {parked.display_name()} — say “deals” to switch back.)")
-        except Exception:
-            pass
-    return reply
+    try:
+        allowed, notify = _rate_check(user_id)
+        if not allowed:
+            msg = cards.throttled()
+            if notify:
+                _send_now(phone, msg)
+            return msg
+
+        if _find_url(inb.text) and _at_deal_limit(user_id):
+            msg = cards.deal_limit(MAX_ACTIVE_DEALS)
+            _send_now(phone, msg)
+            return msg
+
+        deal, parked = _inbound_deal(user_id, inb.chat_id, phone, inb.text)
+        return route_message(deal, inb.text, inb.media_urls,
+                             send=True, research_bg=True, parked=parked)
+    except Exception:
+        # This runs on a worker thread: an escaping exception is a text that
+        # silently never arrives. Never apologise, never explain the stack.
+        msg = cards.error()
+        _send_now(phone, msg)
+        return msg
 
 
 # ── routes: webhook ──────────────────────────────────────────────────────────
@@ -356,13 +620,23 @@ async def webhook(request: Request,
     raw = await request.body()
     if not linq.verify_signature(raw, x_webhook_signature):
         raise HTTPException(status_code=401, detail="bad signature")
+    # Stamp before parsing: a typing indicator or a delivery receipt is not a
+    # message, but it IS proof the listener is alive, which is what /health/inbound
+    # answers.
+    _INBOUND["events"] += 1
+    _INBOUND["last_event_ts"] = time.time()
     try:
         body = await request.json()
     except Exception:
+        _INBOUND["ignored"] += 1
         return {"ok": True, "ignored": "no json"}
     inb = linq.parse_webhook(body)
     if not inb or not inb.has_content():
+        _INBOUND["ignored"] += 1
         return {"ok": True, "ignored": True}
+    _INBOUND["messages"] += 1
+    _INBOUND["last_message_ts"] = _INBOUND["last_event_ts"]
+    _INBOUND["last_sender"] = inb.sender
     # Return 200 fast; do the (blocking) LLM/research work off the event loop.
     asyncio.create_task(asyncio.to_thread(_process_inbound, inb))
     return {"ok": True}
@@ -462,8 +736,12 @@ async def simulate(body: Simulate):
         return route_message(deal, body.text, [], send=False, research_bg=False)
 
     reply = await asyncio.to_thread(run)
-    fresh = STORE.get_deal(deal.id)
-    return {"deal_id": deal.id, "message": reply,
+    # A link starts a NEW deal and moves focus, so report the deal the user is
+    # actually on — otherwise a scripted rehearsal silently keeps polling the
+    # one it just parked.
+    focus_id = STORE.get_focus(deal.user_id) or deal.id
+    fresh = STORE.get_deal(focus_id) or STORE.get_deal(deal.id)
+    return {"deal_id": fresh.id if fresh else deal.id, "message": reply,
             "state": fresh.state.value if fresh else None,
             "snapshot": fresh.snapshot if fresh else None}
 
@@ -490,6 +768,36 @@ async def health():
         "linq": linq.available(),
         "clerk": clerk_enabled(),
         "research_mode": research.RESEARCH_MODE,
+    }
+
+
+@app.get("/health/inbound")
+async def health_inbound():
+    """Is the number still answering?
+
+    `linq webhooks listen` dying is a silent outage — texts vanish with no
+    error anywhere. `stale` is the alarm: nothing at all has arrived (event or
+    message) since `INBOUND_STALE_SECONDS` ago, which means restart the
+    listener. Age is measured from boot until the first event, so a freshly
+    started process is not instantly stale.
+    """
+    now = time.time()
+    since = _INBOUND["last_event_ts"] or _INBOUND["started_at"]
+    age = now - since
+    return {
+        "ok": True,
+        "stale": age > INBOUND_STALE_SECONDS,
+        "stale_after_seconds": INBOUND_STALE_SECONDS,
+        "seconds_since_last_event": round(age, 1),
+        "events": _INBOUND["events"],
+        "messages": _INBOUND["messages"],
+        "ignored": _INBOUND["ignored"],
+        "last_event_ts": _INBOUND["last_event_ts"],
+        "last_message_ts": _INBOUND["last_message_ts"],
+        "last_sender": _INBOUND["last_sender"],
+        "uptime_seconds": round(now - _INBOUND["started_at"], 1),
+        "listener": ("linq webhooks listen --profile closer "
+                     "--forward-to http://localhost:8000/webhooks/linq"),
     }
 
 

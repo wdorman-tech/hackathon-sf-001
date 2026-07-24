@@ -678,8 +678,13 @@ def deal_parked(new_deal: "Deal", parked: "Deal") -> str:
     existing deal (§7 A2) — it creates one and moves focus, and the reply names
     what got parked so the user is never surprised about which deal they're on.
     """
+    # A deal has no title until research names it, and "researching the New
+    # deal now" is what naming it too early reads like on a phone.
+    named = _name(new_deal)
+    head = "On it — researching this one now. 🔎" if named in ("New deal", "This deal") \
+        else f"On it — researching the {named} now. 🔎"
     return "\n".join([
-        f"On it — researching the {_name(new_deal)} now. 🔎",
+        head,
         "",
         f"{_name(parked)} is parked, not lost. Say \"deals\" to switch back.",
     ])
@@ -736,6 +741,10 @@ def undone(deal: "Deal") -> str:
         "",
         f"{verb} {_money(offer)}. Relay what they actually said.",
     ])
+
+
+def nothing_to_undo() -> str:
+    return "Nothing to pull back yet — this one hasn't taken a turn."
 
 
 def deal_limit(limit: int) -> str:
@@ -829,7 +838,8 @@ __all__ = [
     "deal_card", "deal_list", "stats_card", "help_card", "onboarding",
     # copy
     "no_deals", "deal_parked", "switched", "ambiguous_switch", "no_match",
-    "confirm_delete", "deleted", "renamed", "undone", "deal_limit", "throttled",
+    "confirm_delete", "deleted", "renamed", "undone", "nothing_to_undo",
+    "deal_limit", "throttled",
     "research_blocked", "research_started", "no_focus", "not_negotiating",
     "unparsed", "closed_message", "walked_message", "error",
     # glyphs + helpers
