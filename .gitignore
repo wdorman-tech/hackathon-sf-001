@@ -19,3 +19,6 @@ __pycache__/
 
 # Local deal storage (FileStore)
 closer/data/
+
+# Supervisor logs
+logs/
