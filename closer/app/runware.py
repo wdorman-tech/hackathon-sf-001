@@ -56,13 +56,28 @@ def text_inference(
     if not API_KEY:
         raise RunwareError("RUNWARE_API_KEY not set — cannot call Runware")
 
+    # Two shape rules the task API enforces, handled here so callers can keep
+    # writing ordinary OpenAI-style message lists:
+    #   1. messages[].role accepts only user / assistant / tool. A "system"
+    #      message must be lifted into settings.systemPrompt or the request is
+    #      rejected with invalidMessageRole.
+    #   2. maxTokens and temperature live under settings. At the top level they
+    #      come back as unsupportedParameter.
+    system_prompt = "\n\n".join(
+        m["content"] for m in messages if m.get("role") == "system"
+    )
+    turns = [m for m in messages if m.get("role") != "system"]
+
+    settings: dict = {"maxTokens": max_tokens, "temperature": temperature}
+    if system_prompt:
+        settings["systemPrompt"] = system_prompt
+
     task: dict = {
         "taskType": "textInference",
         "taskUUID": str(uuid.uuid4()),
         "model": model or MODEL,
-        "messages": messages,
-        "maxTokens": max_tokens,
-        "temperature": temperature,
+        "messages": turns,
+        "settings": settings,
     }
     if images:
         task["images"] = images

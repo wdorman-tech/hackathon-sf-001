@@ -15,6 +15,46 @@
 - **Ship to a live URL.** Anything demoable should be deployable (Vercel preview) at any moment.
 - **One clear happy path.** Nail the core flow before breadth.
 
+## The other half of the demo lives outside this repo
+
+`~/seller-agent` holds **Marcus**, a private-party car seller agent on its own
+Linq account. He is the counterparty Closer negotiates against: a 2008 Camry LE
+listed at $6,400 that is honestly worth about $4,200, with a $4,750 walk-away he
+never states. He anchors, concedes in shrinking steps, quotes retail listing
+comps while deflecting KBB, and claims other interested buyers when there are
+none — which is exactly the `bluff_claim` signal `closer/app/engine.py` is built
+to detect.
+
+Two Linq accounts, one per agent, so they can text each other:
+
+| | Closer (here) | Marcus (`~/seller-agent`) |
+|---|---|---|
+| Number | +12052611117 | +12054909563 |
+| CLI profile | `closer` | `seller` |
+| Port | 8000 | 8787 |
+
+**Every `linq` command here needs `--profile closer`.** See `LINQ.md`.
+
+## Runware task API — shape rules that bite
+
+Verified against the live API (July 2026). Getting these wrong returns a 400,
+not a degraded response:
+
+- `messages[].role` accepts only `user` / `assistant` / `tool`. A `system`
+  message must be lifted into `settings.systemPrompt` (`invalidMessageRole`).
+- `maxTokens` and `temperature` live under `settings`, not at the top level
+  (`unsupportedParameter`). Full allowed set: `maxTokens`, `temperature`,
+  `topP`, `topK`, `systemPrompt`, `stopSequences`, `thinkingLevel`,
+  `splitThinking`, `presencePenalty`, `frequencyPenalty`, `repetitionPenalty`,
+  `minP`, `search`.
+- `taskUUID` must be a real UUIDv4.
+- `jsonSchema` + `outputFormat: "json"` did **not** reliably constrain output on
+  `anthropic:claude@sonnet-4.6` — it still returned prose in a code fence. Parse
+  defensively rather than trusting the schema.
+
+`closer/app/runware.py` handles the first two centrally, so callers can keep
+writing ordinary OpenAI-style message lists.
+
 ## Working rules
 
 - Real integrations over mocks. If we need a store/payments/auth/DB/email, provision the real thing (Vercel Marketplace) — no UI-only stand-ins unless explicitly asked.
