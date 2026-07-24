@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Closer — live negotiation</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"
+        integrity="sha384-9nhczxUqK87bcKHh20fSQcTGD4qq5GhayNYSYWqwBkINBhOfQLg/P5HG5lF1urn4"
+        crossorigin="anonymous"></script>
+<style>
+  :root{--bg:#0b0e14;--panel:#141925;--line:#232a3b;--ink:#e6ebf5;--dim:#8b97ad;
+        --accent:#5b8cff;--warn:#ffb454;--good:#3fd07a;--bad:#ff6b6b;--fair:#a274ff}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+  header{padding:14px 20px;border-bottom:1px solid var(--line);display:flex;
+         align-items:center;gap:12px}
+  header h1{font-size:16px;margin:0;letter-spacing:.3px}
+  header .tag{font-size:11px;color:var(--dim);border:1px solid var(--line);
+              padding:2px 8px;border-radius:99px}
+  .wrap{display:grid;grid-template-columns:1fr 340px;gap:16px;padding:16px;max-width:1200px;margin:0 auto}
+  @media(max-width:860px){.wrap{grid-template-columns:1fr}}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
+  .strip{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px}
+  .kpi{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+  .kpi .l{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px}
+  .kpi .v{font-size:20px;font-weight:650;margin-top:2px}
+  .rec{font-size:22px;font-weight:750}
+  .rec.COUNTER{color:var(--accent)}.rec.HOLD{color:var(--warn)}
+  .rec.WALK{color:var(--bad)}.rec.ACCEPT{color:var(--good)}
+  .muted{color:var(--dim)} h3{margin:0 0 8px;font-size:12px;text-transform:uppercase;
+         letter-spacing:.6px;color:var(--dim)}
+  .card{margin-bottom:16px}
+  .flag{display:inline-block;background:#2a1b1b;color:#ff9d9d;border:1px solid #45292b;
+        border-radius:6px;padding:1px 7px;margin:2px 3px 0 0;font-size:12px}
+  .cost{display:flex;justify-content:space-between;border-bottom:1px dashed var(--line);padding:3px 0}
+  .trace{max-height:170px;overflow:auto;font-size:12.5px}
+  .trace .s{padding:5px 0;border-bottom:1px solid var(--line)}
+  .trace .s b{color:var(--accent)} .trace .s a{color:var(--dim)}
+  .feed{max-height:320px;overflow:auto}
+  .msg{padding:8px 10px;border-radius:9px;margin:6px 0;max-width:88%}
+  .msg.closer{background:#182238;border:1px solid #26365a}
+  .msg.seller{background:#20232c;border:1px solid var(--line);margin-left:auto}
+  .msg .who{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px}
+  canvas{width:100%!important;height:280px!important}
+  .empty{color:var(--dim);text-align:center;padding:40px 0}
+</style>
+</head>
+<body>
+<header>
+  <h1>Closer</h1><span class="tag" id="tag">connecting…</span>
+  <span class="muted" id="title" style="margin-left:auto"></span>
+</header>
+<div class="wrap">
+  <div>
+    <div class="strip">
+      <div class="kpi"><div class="l">Deal likely</div><div class="v" id="k-deal">—</div></div>
+      <div class="kpi"><div class="l">Their floor ≈</div><div class="v" id="k-floor">—</div></div>
+      <div class="kpi"><div class="l">Seller last</div><div class="v" id="k-seller">—</div></div>
+      <div class="kpi"><div class="l">Your last</div><div class="v" id="k-user">—</div></div>
+    </div>
+    <div class="panel card">
+      <div class="rec" id="rec">Waiting for the first seller message…</div>
+      <div class="muted" id="rec-sub"></div>
+    </div>
+    <div class="panel card"><canvas id="chart"></canvas></div>
+  </div>
+  <div>
+    <div class="panel card" id="val-card">
+      <h3>Research valuation</h3><div id="val"><div class="empty">no research yet</div></div>
+    </div>
+    <div class="panel card">
+      <h3>Research trace</h3><div class="trace" id="trace"><div class="empty">—</div></div>
+    </div>
+    <div class="panel card">
+      <h3>Conversation</h3><div class="feed" id="feed"><div class="empty">—</div></div>
+    </div>
+  </div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const q=new URLSearchParams(location.search);
+const DEAL=q.get('deal'); const USER=q.get('user');
+const money=n=>n==null?'—':'$'+Math.round(n).toLocaleString();
+
+// vertical reference lines (R walk-away, V fair value) + median marker
+const vlines={id:'vlines',afterDatasetsDraw(c){const s=c.$s||{};const {ctx,chartArea:a,scales:{x}}=c;
+  const line=(val,col,lab)=>{if(val==null)return;const px=x.getPixelForValue(val);if(isNaN(px))return;
+    ctx.save();ctx.strokeStyle=col;ctx.lineWidth=1.5;ctx.setLineDash([5,4]);
+    ctx.beginPath();ctx.moveTo(px,a.top);ctx.lineTo(px,a.bottom);ctx.stroke();
+    ctx.setLineDash([]);ctx.fillStyle=col;ctx.font='10px sans-serif';
+    ctx.save();ctx.translate(px+4,a.top+10);ctx.fillText(lab,0,0);ctx.restore();ctx.restore();};
+  line(s.R,'#ff6b6b','WALK-AWAY '+money(s.R));
+  line(s.V,'#a274ff','FAIR '+money(s.V));
+  line(s.floor,'#3fd07a','FLOOR ≈'+money(s.floor));}};
+
+let chart;
+function draw(snap){
+  const fm=snap&&snap.floor_map; const cv=$('chart');
+  if(!fm){return;}
+  const data={labels:fm.floors,datasets:[{data:fm.p,borderColor:'#5b8cff',
+    backgroundColor:'rgba(91,140,255,.18)',fill:true,tension:.35,pointRadius:0,borderWidth:2}]};
+  const opts={animation:{duration:400},plugins:{legend:{display:false}},
+    scales:{x:{type:'linear',ticks:{color:'#8b97ad',callback:v=>'$'+(v/1000).toFixed(0)+'k',
+      maxTicksLimit:7},grid:{color:'#1b2130'}},
+      y:{display:false,grid:{display:false}}}};
+  if(!chart){chart=new Chart(cv,{type:'line',data,options:opts,plugins:[vlines]});}
+  else{chart.data=data;chart.options=opts;}
+  chart.$s={R:snap.R,V:snap.V,floor:snap.floor_point_est};chart.update();
+}
+
+function render(deal){
+  if(!deal){$('tag').textContent='no active deal';return;}
+  $('tag').textContent=deal.state;$('title').textContent=deal.title||'';
+  const s=deal.snapshot;
+  if(s){
+    $('rec').textContent = s.action==='COUNTER'?`COUNTER ${money(s.offer)} — HOLD FIRM`
+      : s.action==='HOLD'?`HOLD ${money(s.offer)} — CALL THE BLUFF`
+      : s.action==='WALK'?`WALK — floor above ${money(deal.R)}`
+      : s.action==='ACCEPT'?`ACCEPT ${money(s.offer)}`:'—';
+    $('rec').className='rec '+s.action;
+    $('rec-sub').textContent = s.coach_message || '';
+    $('k-deal').textContent = (s.p_accept!=null?Math.round(s.p_accept*100)+'%':'—');
+    $('k-floor').textContent = money(s.floor_point_est);
+    draw(s);
+  }
+  $('k-seller').textContent=money(deal.last_seller_price);
+  $('k-user').textContent=money(deal.last_user_offer);
+  // valuation card
+  const r=deal.research;
+  if(r){let h=`<div style="font-size:22px;font-weight:700">${money(r.fair_value)}<span class="muted" style="font-size:12px"> fair value · ${r.confidence||''}</span></div>`;
+    (r.hidden_costs||[]).forEach(c=>h+=`<div class="cost"><span>${c.item}</span><b>${money(c.cost)}</b></div>`);
+    if((r.red_flags||[]).length)h+='<div style="margin-top:8px">'+r.red_flags.map(f=>`<span class="flag">${f}</span>`).join('')+'</div>';
+    if((r.sources||[]).length)h+='<div class="muted" style="margin-top:8px;font-size:12px">sources: '+
+      r.sources.map(x=>`<a href="${x.url}" target="_blank" style="color:#8b97ad">${(new URL(x.url).hostname).replace('www.','')}</a>`).join(', ')+'</div>';
+    $('val').innerHTML=h;}
+  // trace
+  const st=deal.research_steps||[];
+  $('trace').innerHTML = st.length? st.map(x=>`<div class="s"><b>${x.tool}</b> ${x.arg?('· '+(''+x.arg).slice(0,60)):''}<div class="muted">${x.note||x.thought||''}</div></div>`).join('') : '<div class="empty">—</div>';
+  $('trace').scrollTop=$('trace').scrollHeight;
+  // feed
+  const f=deal.feed||[];
+  $('feed').innerHTML = f.length? f.map(m=>`<div class="msg ${m.role}"><div class="who">${m.role}</div>${(m.text||'').replace(/</g,'&lt;')}</div>`).join('') : '<div class="empty">—</div>';
+  $('feed').scrollTop=$('feed').scrollHeight;
+}
+
+async function tick(){
+  try{const u=new URL('/state',location.origin);
+    if(DEAL)u.searchParams.set('deal_id',DEAL); if(USER)u.searchParams.set('user_id',USER);
+    const r=await fetch(u);const j=await r.json();render(j.deal);
+  }catch(e){$('tag').textContent='offline';}
+}
+tick();setInterval(tick,1000);
+</script>
+</body>
+</html>
