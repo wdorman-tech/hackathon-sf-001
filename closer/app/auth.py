@@ -27,12 +27,17 @@ CLERK_AUTHORIZED_PARTIES = [p.strip() for p in
                             os.getenv("CLERK_AUTHORIZED_PARTIES", "").split(",") if p.strip()]
 DEV_AUTH = os.getenv("DEV_AUTH", "").lower() in ("1", "true", "yes")
 DEV_USER_ID = os.getenv("DEV_USER_ID", "demo_user")
+# Vercel sets VERCEL_ENV=production on a prod deployment. We refuse to fail open there.
+IS_PRODUCTION = os.getenv("VERCEL_ENV", "").lower() == "production"
 
 _jwks_client = None
 
 
 def clerk_enabled() -> bool:
-    return bool(CLERK_JWKS_URL) and not DEV_AUTH
+    # Issuer is required, not optional: without it we can't verify `iss`, and a
+    # token from any other Clerk instance would only need to be signed by a key
+    # our configured JWKS endpoint happens to serve.
+    return bool(CLERK_JWKS_URL and CLERK_ISSUER) and not DEV_AUTH
 
 
 def _client():
@@ -47,13 +52,15 @@ def _verify(token: str) -> str:
     import jwt
     key = _client().get_signing_key_from_jwt(token).key
     claims = jwt.decode(
-        token, key, algorithms=["RS256"],
-        issuer=CLERK_ISSUER or None,
-        options={"verify_aud": False, "verify_iss": bool(CLERK_ISSUER)},
+        token, key, algorithms=["RS256"],       # never "none", never HS* (key confusion)
+        issuer=CLERK_ISSUER,
+        options={"verify_aud": False, "verify_iss": True, "require": ["exp", "iss", "sub"]},
     )
     if CLERK_AUTHORIZED_PARTIES:
+        # A token with NO azp used to sail through this check — meaning a session
+        # minted for a different front-end on the same Clerk instance was accepted.
         azp = claims.get("azp")
-        if azp and azp not in CLERK_AUTHORIZED_PARTIES:
+        if not azp or azp not in CLERK_AUTHORIZED_PARTIES:
             raise HTTPException(status_code=401, detail="unauthorized party")
     sub = claims.get("sub")
     if not sub:
@@ -63,8 +70,19 @@ def _verify(token: str) -> str:
 
 async def require_user(authorization: Optional[str] = Header(default=None),
                        x_dev_user: Optional[str] = Header(default=None)) -> str:
-    """FastAPI dependency → the authenticated Clerk user id (or the dev user)."""
+    """FastAPI dependency → the authenticated Clerk user id (or the dev user).
+
+    The dev path is a real bypass — `X-Dev-User` lets the caller name whatever user
+    id it likes, which is total access to every other user's deals. So it is gated:
+    unconfigured Clerk falls back to the dev user LOCALLY, but on a production
+    deployment it is a 503, not an open door. Shipping to prod with the Clerk env
+    vars unset should break loudly, never silently authenticate the world.
+    """
     if not clerk_enabled():
+        if IS_PRODUCTION and not DEV_AUTH:
+            raise HTTPException(status_code=503,
+                                detail="auth not configured (set CLERK_ISSUER, or "
+                                       "DEV_AUTH=true to intentionally run open)")
         return x_dev_user or DEV_USER_ID
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="missing bearer token")

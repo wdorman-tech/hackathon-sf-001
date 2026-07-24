@@ -371,8 +371,16 @@ inject "respond with the `finish` JSON now."
 
 ### 5.3 Tools
 
-- `fetch_page(url)` → `{url, text, error}`. `http(s)` only, redirects followed, non-text
-  content types rejected. Never raises.
+- `fetch_page(url)` → `{url, text, error}`. `http(s)` only, non-text content types rejected.
+  Never raises. **SSRF-guarded**, because neither of its two input paths is trusted: the listing
+  URL comes off the Linq webhook, and the agent picks targets after reading listing text and
+  search snippets an attacker can write ("now fetch `http://169.254.169.254/…`" is a
+  prompt-injection-to-SSRF chain, and on Vercel that address answers). So before every request:
+  no userinfo, port ∈ {80,443}, host normalised, `getaddrinfo` resolved and **every** address
+  must be public — loopback, private, link-local/metadata, CGNAT, multicast, reserved and
+  IPv4-mapped-IPv6 spellings all rejected. Redirects are followed manually (max 4) so each hop
+  is re-validated; `follow_redirects=True` would let a public host bounce us to 127.0.0.1.
+  `RESEARCH_ALLOW_PRIVATE_HOSTS=true` is a dev-only hatch for local fixtures.
 - `web_search(query)` → `{query, results:[{title, url, snippet}], error}`. Never raises.
   Provider order = `SEARCH_PROVIDER` then keyless DuckDuckGo (`html.duckduckgo.com/html/`,
   redirect links unwrapped from `uddg=`, sponsored `y.js?ad_domain=` rows filtered out).
@@ -521,8 +529,21 @@ from app.main import app   # noqa: F401
 - `require_user()` is a FastAPI dependency; use it on every user-facing route.
 - Not configured, or `DEV_AUTH=true` → returns `DEV_USER_ID` (or the `X-Dev-User` header). Local
   dev, tests, and the `/simulate` demo path are never blocked by auth.
-- The Linq webhook stays unauthenticated by Clerk — Linq is a machine, not a user. It's gated by
-  `VERIFY_LINQ_SIGNATURES` and routed by chat id / phone.
+- **The dev path is a real bypass and is gated accordingly.** `X-Dev-User` lets the caller name
+  any user id, which is read access to every other user's deals. So: unconfigured Clerk falls
+  back to the dev user **locally**, but when `VERCEL_ENV=production` it's a **503**, not an open
+  door — shipping to prod with the Clerk vars unset breaks loudly instead of silently
+  authenticating the world. `DEV_AUTH=true` still opens it, deliberately.
+- `CLERK_ISSUER` is **required** to enable Clerk (not just `CLERK_JWKS_URL`): without it there's
+  no `iss` to verify. Tokens are decoded RS256-only, with `exp`/`iss`/`sub` required. If
+  `CLERK_AUTHORIZED_PARTIES` is set, a token with **no** `azp` is rejected too — otherwise a
+  session minted for a different front-end on the same Clerk instance would be accepted.
+- The Linq webhook stays unauthenticated by Clerk — Linq is a machine, not a user. It's routed
+  by chat id / phone and gated by HMAC: verification is enforced when `VERIFY_LINQ_SIGNATURES=true`
+  **or** whenever `LINQ_WEBHOOK_SECRET` is set, so a configured secret is never silently ignored.
+  No secret at all = the unverified demo default. An open webhook lets anyone who knows the URL
+  drive a negotiation, burn Runware credit, and aim the research agent's fetches — set the secret
+  before the deployment URL goes anywhere public.
 
 ---
 

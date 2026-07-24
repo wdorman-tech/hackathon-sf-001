@@ -86,9 +86,21 @@ def parse_webhook(body: dict) -> Optional[InboundMessage]:
     )
 
 
+def signatures_enforced() -> bool:
+    """Verification is on if explicitly enabled OR a secret is configured.
+
+    A configured LINQ_WEBHOOK_SECRET is never silently ignored: forgetting to also
+    flip VERIFY_LINQ_SIGNATURES used to leave the webhook wide open, and an open
+    webhook lets anyone who knows the URL drive a negotiation, burn Runware credit,
+    and aim the research agent's outbound fetches. Demo default (no secret set at
+    all) is still unverified, as the build spec calls for.
+    """
+    return VERIFY_SIGNATURES or bool(LINQ_WEBHOOK_SECRET)
+
+
 def verify_signature(raw_body: bytes, signature: Optional[str]) -> bool:
-    """HMAC check for x-webhook-signature. Only enforced when VERIFY_LINQ_SIGNATURES=true."""
-    if not VERIFY_SIGNATURES:
+    """HMAC check for x-webhook-signature. See signatures_enforced() for the gate."""
+    if not signatures_enforced():
         return True
     if not (signature and LINQ_WEBHOOK_SECRET):
         return False
