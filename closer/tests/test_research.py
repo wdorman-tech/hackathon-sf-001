@@ -9,6 +9,7 @@ every failure mode still yields a usable valuation instead of an exception.
 from __future__ import annotations
 
 import json
+import socket
 
 import pytest
 
@@ -54,6 +55,112 @@ def test_web_search_never_raises_when_provider_dies(monkeypatch):
 def test_fetch_page_rejects_non_http():
     out = research.fetch_page("file:///etc/passwd")
     assert out["text"] == "" and out["error"] == "not an http(s) url"
+
+
+# ── SSRF guard ───────────────────────────────────────────────────────────────
+@pytest.mark.parametrize("addr", [
+    "127.0.0.1",              # loopback
+    "169.254.169.254",        # cloud metadata — the one that leaks credentials
+    "10.0.0.5",               # private
+    "172.16.4.4",             # private
+    "192.168.1.1",            # private
+    "0.0.0.0",                # unspecified
+    "::1",                    # ipv6 loopback
+    "fd00::1",                # ipv6 unique-local
+    "::ffff:169.254.169.254",  # ipv4-mapped ipv6 metadata
+    "100.64.0.1",             # CGNAT
+    "224.0.0.1",              # multicast
+    "not-an-ip",
+])
+def test_internal_addresses_are_blocked(addr):
+    assert research._ip_is_blocked(addr)
+
+
+@pytest.mark.parametrize("addr", ["93.184.216.34", "8.8.8.8", "2606:2800:220:1::1"])
+def test_public_addresses_are_allowed(addr):
+    assert not research._ip_is_blocked(addr)
+
+
+def _dns(monkeypatch, ip: str, *, only: str | None = None):
+    """Resolve hostnames to `ip`. With `only`, other hosts resolve to themselves,
+    so a redirect to a literal internal IP is still checked for real."""
+    def fake(h, p, **kw):
+        addr = ip if (only is None or h == only) else h
+        fam = socket.AF_INET6 if ":" in addr else socket.AF_INET
+        return [(fam, socket.SOCK_STREAM, 6, "", (addr, p))]
+
+    monkeypatch.setattr(research.socket, "getaddrinfo", fake)
+
+
+def test_hostname_resolving_to_metadata_ip_is_rejected(monkeypatch):
+    """The classic bypass: a public-looking name with an internal A record."""
+    _dns(monkeypatch, "169.254.169.254")
+    out = research.fetch_page("https://totally-legit-listings.com/car")
+    assert out["text"] == "" and "blocked host" in out["error"]
+
+
+def test_credentials_in_url_rejected():
+    assert "credentials" in research._validate_url("https://user:pw@example.com/") or ""
+
+
+def test_nonstandard_port_rejected(monkeypatch):
+    _dns(monkeypatch, "93.184.216.34")
+    assert research._validate_url("http://example.com:6379/") == "port 6379 not allowed"
+
+
+def test_trailing_dot_host_is_normalized(monkeypatch):
+    seen = {}
+
+    def fake_getaddrinfo(h, p, **kw):
+        seen["host"] = h
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", p))]
+
+    monkeypatch.setattr(research.socket, "getaddrinfo", fake_getaddrinfo)
+    assert research._validate_url("https://EXAMPLE.com./x") is None
+    assert seen["host"] == "example.com"
+
+
+def test_redirect_to_internal_host_is_blocked(monkeypatch):
+    """httpx's own follow_redirects would have walked straight into this."""
+    _dns(monkeypatch, "93.184.216.34", only="public-site.com")
+    hops = {"n": 0}
+
+    class Resp:
+        def __init__(self, redirect):
+            self.is_redirect = redirect
+            self.status_code = 302 if redirect else 200
+            self.headers = ({"location": "http://169.254.169.254/latest/meta-data/"}
+                            if redirect else {"content-type": "text/html"})
+            self.text = "<p>ok</p>"
+
+    def fake_get(url, **kw):
+        hops["n"] += 1
+        if hops["n"] == 1:
+            return Resp(True)
+        return Resp(False)
+
+    monkeypatch.setattr(research.httpx, "get", fake_get)
+    out = research.fetch_page("https://public-site.com/listing")
+    assert out["text"] == "" and "blocked host" in out["error"]
+    assert hops["n"] == 1                       # never issued the second request
+
+
+def test_redirect_loop_terminates(monkeypatch):
+    _dns(monkeypatch, "93.184.216.34")
+
+    class Resp:
+        is_redirect = True
+        status_code = 302
+        headers = {"location": "https://public-site.com/again"}
+
+    monkeypatch.setattr(research.httpx, "get", lambda url, **kw: Resp())
+    out = research.fetch_page("https://public-site.com/listing")
+    assert "too many redirects" in out["error"]
+
+
+def test_dev_escape_hatch_allows_localhost(monkeypatch):
+    monkeypatch.setattr(research, "ALLOW_PRIVATE_HOSTS", True)
+    assert research._validate_url("http://127.0.0.1:8000/fixture.html") is None
 
 
 # ── the loop ─────────────────────────────────────────────────────────────────

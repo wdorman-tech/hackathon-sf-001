@@ -39,9 +39,11 @@ raised (see README / vercel.json).
 from __future__ import annotations
 
 import html as htmlmod
+import ipaddress
 import json
 import os
 import re
+import socket
 import urllib.parse
 from html.parser import HTMLParser
 from typing import Callable, Optional
@@ -58,6 +60,10 @@ SEARCH_PROVIDER = os.getenv("SEARCH_PROVIDER", "ddg").strip().lower()
 SEARCH_RESULTS = int(os.getenv("SEARCH_RESULTS", "5"))
 BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "").strip()
 SERPER_API_KEY = os.getenv("SERPER_API_KEY", "").strip()
+# Escape hatch for pointing the agent at a local fixture in dev. Never set in prod.
+ALLOW_PRIVATE_HOSTS = os.getenv("RESEARCH_ALLOW_PRIVATE_HOSTS", "").lower() in ("1", "true", "yes")
+MAX_REDIRECTS = int(os.getenv("RESEARCH_MAX_REDIRECTS", "4"))
+ALLOWED_PORTS = {80, 443}
 
 _UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
@@ -142,23 +148,93 @@ def html_to_text(html: str, cap: int = PAGE_CHAR_CAP) -> str:
     return text[:cap]
 
 
+# ── SSRF guard ───────────────────────────────────────────────────────────────
+# fetch_page is reachable by two untrusted paths: the listing URL arrives over the
+# Linq webhook (anyone who can text the number), and the agent picks fetch_page
+# targets after reading listing text and search snippets an attacker can write. So
+# "the LLM chose it" is not a trust boundary — a listing page that says "now fetch
+# http://169.254.169.254/latest/meta-data/" is a prompt-injection-to-SSRF chain,
+# and on Vercel that address answers. Every hop is validated before we connect.
+
+
+def _ip_is_blocked(addr: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return True                                # unparseable => not worth the risk
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped                        # ::ffff:169.254.169.254
+    return not ip.is_global or ip.is_multicast     # is_global already excludes
+                                                   # loopback/private/link-local/reserved
+
+
+def _validate_url(url: str) -> Optional[str]:
+    """Return an error string if `url` is unsafe to fetch, else None."""
+    if not re.match(r"^https?://", url or ""):
+        return "not an http(s) url"
+    try:
+        p = urllib.parse.urlsplit(url)
+    except ValueError as e:
+        return f"unparseable url: {e}"
+    if p.username or p.password:
+        return "url contains credentials"
+    host = (p.hostname or "").rstrip(".").lower()
+    if not host:
+        return "url has no host"
+    try:
+        port = p.port or (443 if p.scheme == "https" else 80)
+    except ValueError:
+        return "invalid port"
+    # The dev hatch bypasses the port allowlist too — local fixtures live on :8000.
+    if ALLOW_PRIVATE_HOSTS:
+        return None
+    if port not in ALLOWED_PORTS:
+        return f"port {port} not allowed"
+    try:
+        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as e:
+        return f"dns failed: {e}"
+    if not infos:
+        return "dns returned no addresses"
+    for info in infos:                             # ALL addresses must be public
+        if _ip_is_blocked(info[4][0]):
+            return f"blocked host {host} -> {info[4][0]} (private/loopback/link-local)"
+    return None
+
+
 # ── Tool: fetch_page ─────────────────────────────────────────────────────────
 def fetch_page(url: str, *, cap: int = PAGE_CHAR_CAP) -> dict:
-    """GET a URL and return {url, text, error}. Never raises."""
-    if not re.match(r"^https?://", url or ""):
-        return {"url": url, "text": "", "error": "not an http(s) url"}
-    try:
-        r = httpx.get(url, headers={"User-Agent": _UA, "Accept-Language": "en-US,en"},
-                      timeout=RESEARCH_TIMEOUT_S, follow_redirects=True)
-    except httpx.HTTPError as e:
-        return {"url": url, "text": "", "error": f"fetch failed: {e}"}
-    if r.status_code >= 400:
-        return {"url": url, "text": "", "error": f"HTTP {r.status_code}"}
-    ctype = r.headers.get("content-type", "")
-    body = r.text if "html" in ctype or "text" in ctype or not ctype else ""
-    if not body:
-        return {"url": url, "text": "", "error": f"unsupported content-type {ctype!r}"}
-    return {"url": url, "text": html_to_text(body, cap), "error": None}
+    """GET a URL and return {url, text, error}. Never raises.
+
+    Redirects are followed manually so every hop gets the same SSRF validation —
+    httpx's own follow_redirects would let a public host bounce us to 127.0.0.1.
+
+    Known residual risk: DNS rebinding. We validate the resolved addresses and then
+    let httpx resolve again, so a TTL-0 record could flip between the two. Closing
+    that needs connect-to-pinned-IP with a Host override, which breaks TLS SNI —
+    out of scope here, and the metadata-endpoint case (the one that actually leaks
+    credentials) is a fixed IP that this check already blocks.
+    """
+    for _ in range(MAX_REDIRECTS + 1):
+        err = _validate_url(url)
+        if err:
+            return {"url": url, "text": "", "error": err}
+        try:
+            r = httpx.get(url, headers={"User-Agent": _UA, "Accept-Language": "en-US,en"},
+                          timeout=RESEARCH_TIMEOUT_S, follow_redirects=False)
+        except httpx.HTTPError as e:
+            return {"url": url, "text": "", "error": f"fetch failed: {e}"}
+        if r.is_redirect and r.headers.get("location"):
+            url = urllib.parse.urljoin(url, r.headers["location"])
+            continue
+        if r.status_code >= 400:
+            return {"url": url, "text": "", "error": f"HTTP {r.status_code}"}
+        ctype = r.headers.get("content-type", "")
+        body = r.text if "html" in ctype or "text" in ctype or not ctype else ""
+        if not body:
+            return {"url": url, "text": "", "error": f"unsupported content-type {ctype!r}"}
+        return {"url": url, "text": html_to_text(body, cap), "error": None}
+    return {"url": url, "text": "", "error": f"too many redirects (>{MAX_REDIRECTS})"}
 
 
 # ── Tool: web_search (provider-swappable, keyless by default) ────────────────
