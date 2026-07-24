@@ -7,5 +7,6 @@ pydantic>=2.7
 python-dotenv>=1.0
 python-multipart>=0.0.9
 pyjwt[crypto]>=2.8    # verify Clerk session JWTs (app/auth.py)
-pytest>=8.0           # engine tests only
+pillow>=10.0          # screenshot downscaling before vision calls
+pytest>=8.0           # engine + unit tests
 # Runware needs no SDK: app/runware.py POSTs the native task API with httpx.

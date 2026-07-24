@@ -310,6 +310,22 @@ if __name__ == "__main__":
             print(m)
         sys.exit(0)
 
+    if "--vision" in sys.argv:
+        # Dev 1 Phase-1 gate: prove the A1 image path end to end.
+        #   python -m app.llm --vision tests/fixtures/chat1.png
+        import base64
+        import pathlib
+
+        path = pathlib.Path(sys.argv[sys.argv.index("--vision") + 1])
+        data_uri = ("data:image/png;base64,"
+                    + base64.b64encode(path.read_bytes()).decode())
+        print(f"reading {path} ({path.stat().st_size:,} bytes) via "
+              f"{'RUNWARE' if runware.available() else 'NO KEY — cannot run'}")
+        out = extract_from_screenshot(data_uri)
+        print("seller messages:", out.get("seller_messages"))
+        print("latest price   :", out.get("latest_seller_price"))
+        sys.exit(0)
+
     if "--smoke" in sys.argv:
         print("Runware available:", runware.available(), "| model:", runware.MODEL)
         txt = runware.text_inference(

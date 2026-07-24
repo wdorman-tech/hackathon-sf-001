@@ -38,7 +38,7 @@ from pydantic import BaseModel  # noqa: E402
 from app import demo, linq, llm, research, runware  # noqa: E402
 from app import store as store_mod  # noqa: E402
 from app.auth import DEV_USER_ID, clerk_enabled, require_user  # noqa: E402
-from app.state import Deal, DealState  # noqa: E402
+from app.state import Deal, DealState, user_id_for  # noqa: E402
 
 STORE = store_mod.get_store()
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
@@ -236,6 +236,10 @@ def route_message(deal: Deal, text: Optional[str], media: list[str], *,
         if outcome == "closed":
             price = deal.last_user_offer or deal.last_seller_price or 0
             deal.state = DealState.CLOSED
+            # Freeze the price now. The stats card sums it across every closed
+            # deal, so it must not be re-derived later from a log that UNDO
+            # could change out from under it.
+            deal.closed_price = float(price)
             STORE.save_deal(deal)
             under = int((deal.asking or 0) - price)
             tail = f" — ${under:,} under ask" if under > 0 else ""
@@ -252,37 +256,97 @@ def route_message(deal: Deal, text: Optional[str], media: list[str], *,
                        "of your chat with them.")
         return out(coach, log=False)   # _process_seller_turn already logged the closer turn
 
-    # CLOSED / WALKED
-    url = _find_url(text)
-    if url:
-        deal.signals_log, deal.feed, deal.snapshot = [], [], None
-        deal.last_seller_price = deal.last_user_offer = None
-        _start_research(deal, url, background=research_bg)
-        return out("New one? On it — researching now. 🔎")
+    # CLOSED / WALKED. A listing link never lands here — `_inbound_deal` starts a
+    # fresh deal for it. Closed deals are the stats card's data; the old branch
+    # that wiped one to recycle the record destroyed the headline number.
     return out("This deal's wrapped. Send a new listing link to start another.")
 
 
-def _resolve_or_create(chat_id: Optional[str], sender: Optional[str]) -> Deal:
-    deal = STORE.find_by_chat(chat_id) if chat_id else None
-    if not deal and sender:
-        deal = STORE.find_active_by_phone(sender)
-    if not deal:
-        deal = Deal(user_id=f"phone:{sender or 'unknown'}", phone=sender, chat_id=chat_id)
-        STORE.save_deal(deal)
-        return deal
+# ── who is this, and which of their deals are we talking about ───────────────
+def _resolve_user(sender: Optional[str]) -> str:
+    """The phone number is the account. Trust model lives in `state.user_id_for`."""
+    return user_id_for(sender)
+
+
+def _focused_deal(user_id: str, chat_id: Optional[str] = None) -> Optional[Deal]:
+    """The deal an unqualified message applies to (§4.2 resolution order).
+
+    Stored focus → most recently updated active deal → most recent deal of any
+    state → None, which means this user has no deals yet and gets onboarding.
+    An explicit SWITCH is resolved by the caller before this runs.
+
+    `find_active_by_phone` is deliberately not consulted: focus is explicit and
+    sticky, so a user who switched back to an older deal stays there even though
+    a newer one is more recently touched.
+    """
+    focus_id = STORE.get_focus(user_id)
+    if focus_id:
+        deal = STORE.get_deal(focus_id)
+        if deal:
+            return deal
+    deals = STORE.list_deals(user_id)          # already most-recent-first
+    if not deals:
+        return None
+    return next((d for d in deals if d.is_active()), deals[0])
+
+
+def _adopt(deal: Deal, chat_id: Optional[str], phone: Optional[str]) -> Deal:
+    """Backfill routing identifiers we only learn from an inbound message."""
     changed = False
     if chat_id and not deal.chat_id:
         deal.chat_id, changed = chat_id, True
-    if sender and not deal.phone:
-        deal.phone, changed = sender, True
+    if phone and not deal.phone:
+        deal.phone, changed = phone, True
     if changed:
         STORE.save_deal(deal)
     return deal
 
 
-def _process_inbound(inb: linq.InboundMessage) -> None:
-    deal = _resolve_or_create(inb.chat_id, inb.sender)
-    route_message(deal, inb.text, inb.media_urls, send=True, research_bg=True)
+def _new_deal(user_id: str, chat_id: Optional[str], phone: Optional[str]) -> Deal:
+    deal = Deal(user_id=user_id, phone=phone, chat_id=chat_id)
+    STORE.save_deal(deal)
+    STORE.set_focus(user_id, deal.id)
+    return deal
+
+
+def _inbound_deal(user_id: str, chat_id: Optional[str], phone: Optional[str],
+                  text: Optional[str]) -> tuple[Deal, Optional[Deal]]:
+    """Resolve the deal an inbound message belongs to. Returns (deal, parked).
+
+    A listing link ALWAYS starts a new deal and takes focus — a link is never
+    folded into an existing negotiation. The one exception is the empty shell
+    created for a brand-new user, which has nothing to preserve and would
+    otherwise be orphaned by its own first message.
+    """
+    focused = _focused_deal(user_id, chat_id)
+    url = _find_url(text)
+
+    if url and focused is not None and focused.listing_link is None \
+            and focused.state == DealState.AWAITING_LINK:
+        return _adopt(focused, chat_id, phone), None      # onboarding shell
+
+    if url and focused is not None:
+        parked = focused if focused.is_active() else None
+        return _new_deal(user_id, chat_id, phone), parked
+
+    if focused is None:
+        return _new_deal(user_id, chat_id, phone), None
+
+    return _adopt(focused, chat_id, phone), None
+
+
+def _process_inbound(inb: linq.InboundMessage) -> str:
+    user_id = _resolve_user(inb.sender)
+    phone = inb.sender
+    deal, parked = _inbound_deal(user_id, inb.chat_id, phone, inb.text)
+    reply = route_message(deal, inb.text, inb.media_urls, send=True, research_bg=True)
+    if parked is not None and phone and linq.available():
+        # Copy is Dev 2's at Sync 1; the behaviour is what matters here.
+        try:
+            linq.send(phone, f"(Parked {parked.display_name()} — say “deals” to switch back.)")
+        except Exception:
+            pass
+    return reply
 
 
 # ── routes: webhook ──────────────────────────────────────────────────────────
