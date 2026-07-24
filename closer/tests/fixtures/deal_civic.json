@@ -1,0 +1,30 @@
+{
+  "id": "331cb43c57f2",
+  "user_id": "phone:+12055550100",
+  "chat_id": null,
+  "phone": "+12055550100",
+  "title": "2016 Honda Civic EX",
+  "listing_link": "https://www.cars.com/vehicledetail/9f2c1a/",
+  "state": "AWAITING_RESEARCH",
+  "research": null,
+  "asking": 11900.0,
+  "R": null,
+  "V": null,
+  "research_steps": [
+    {
+      "tool": "web_search",
+      "note": "2016 Civic EX private party value"
+    },
+    {
+      "tool": "fetch_page",
+      "note": "kbb.com/honda/civic/2016/"
+    }
+  ],
+  "signals_log": [],
+  "last_seller_price": null,
+  "last_user_offer": null,
+  "feed": [],
+  "snapshot": null,
+  "created_at": 1753299880.0,
+  "updated_at": 1753299910.0
+}
