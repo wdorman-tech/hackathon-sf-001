@@ -223,13 +223,15 @@ def _quote(text: Optional[str], limit: int = 58) -> Optional[str]:
     return " ".join(words).rstrip(" ,;:-") + "…"
 
 
-def _bluff_block(deal: "Deal", traj: list[dict]) -> list[str]:
-    """The whole pitch in four lines. §4.6.
+def bluff_turn(deal: "Deal", traj: list[dict]) -> Optional[tuple[dict, float]]:
+    """The turn where pressure was applied and the math didn't care. §4.6.
 
-    Emitted only when a turn had `bluff_claim=True` AND that turn's `floor_est`
-    delta was under 1% of `asking`. That conjunction is the product: pressure
-    applied, math unmoved. If no turn qualifies, the block is dropped — never
-    faked, never softened into "possibly a bluff".
+    Returns `(turn, delta)` for the most recent qualifying turn, or None. A turn
+    qualifies only when it had `bluff_claim=True` AND its `floor_est` delta was
+    under 1% of `asking`. That conjunction is the product — pressure applied,
+    posterior unmoved — so it is computed in exactly one place and both the
+    Unicode card and the PNG chart read it from here. If no turn qualifies,
+    callers drop the callout: never faked, never softened into "possibly".
 
     Turn 1 can never qualify: there is no prior estimate to have failed to move.
     The most recent qualifying turn wins, because that is the one still in the
@@ -237,7 +239,7 @@ def _bluff_block(deal: "Deal", traj: list[dict]) -> list[str]:
     """
     asking = deal.asking
     if not asking or len(traj) < 2:
-        return []
+        return None
     limit = BLUFF_MOVE_FRACTION * float(asking)
     for cur, prev in zip(reversed(traj[1:]), reversed(traj[:-1])):
         sig = cur.get("signals") or {}
@@ -249,14 +251,22 @@ def _bluff_block(deal: "Deal", traj: list[dict]) -> list[str]:
         delta = abs(float(a) - float(b))
         if delta >= limit:
             continue                               # they moved: it was not cheap talk
-        lines = [""]
-        quote = _quote(cur.get("seller_text"))
-        head = f"🎣 Turn {cur['turn']}"
-        lines.append(f'{head} — "{quote}"' if quote else f"{head} — the pressure play.")
-        moved = "didn't move at all" if delta < 1 else f"moved {_money(delta)}"
-        lines.append(f"{IND}The curve {moved}. That was a bluff.")
-        return lines
-    return []
+        return cur, delta
+    return None
+
+
+def _bluff_block(deal: "Deal", traj: list[dict]) -> list[str]:
+    """The whole pitch in four lines, off `bluff_turn`."""
+    found = bluff_turn(deal, traj)
+    if found is None:
+        return []
+    cur, delta = found
+    quote = _quote(cur.get("seller_text"))
+    head = f"🎣 Turn {cur['turn']}"
+    moved = "didn't move at all" if delta < 1 else f"moved {_money(delta)}"
+    return ["",
+            f'{head} — "{quote}"' if quote else f"{head} — the pressure play.",
+            f"{IND}The curve {moved}. That was a bluff."]
 
 
 def deal_card(deal: "Deal") -> str:
@@ -404,6 +414,99 @@ def deal_card(deal: "Deal") -> str:
 
     lines += _bluff_block(deal, traj)
     return "\n".join(lines)
+
+
+# ── explanations on demand (§7 B5) ───────────────────────────────────────────
+def explain(deal: "Deal") -> str:
+    """Why that number — the ❓ tapback and the word "why" both land here.
+
+        🧠 Why $4,992 on the 2008 Toyota Camry LE
+
+        Their floor reads $5,062. That's the middle of what I believe after 4
+        turns — not what they've said, what their behaviour implies.
+
+        I'm fairly confident: ±$188. So I'd be surprised under $4,874, and
+        surprised if they held out past $5,250.
+
+        At $4,992 there's a 41% chance they take it right now. Push lower and
+        that number falls faster than the money you'd save.
+
+        Turn 3 is why I'm not moving: they applied pressure and the estimate
+        moved $4.
+
+    The engine's `rationale` is one sentence of this — where the floor reads and
+    what `p_accept` is. This extends it rather than restating it: where the
+    estimate came from, how wide the uncertainty actually is, and what that
+    spread means for the offer currently on the table. Every number is read off
+    the persisted snapshot, so it can never disagree with the card above it.
+    """
+    snap = _snapshot(deal)
+    traj = _trajectory(deal)
+    state = _state(deal)
+
+    if not snap:
+        if state == "AWAITING_LINK":
+            return ("🧠 Nothing to explain yet — I don't have the listing.\n\n"
+                    "Send me the link and I'll show you the whole calculation.")
+        if state == "AWAITING_RESEARCH":
+            return ("🧠 Still working. I'm pulling comps and known problems for "
+                    f"{_name(deal)} right now.\n\n"
+                    "Once they reply with a number, I'll show you exactly how I "
+                    "read their floor.")
+        return ("🧠 No numbers to explain yet.\n\n"
+                "Relay what the seller said and I'll show you the math behind "
+                "the counter.")
+
+    floor = snap.get("floor_point_est")
+    std = snap.get("floor_std")
+    offer = snap.get("offer")
+    p = snap.get("p_accept")
+    action = (snap.get("action") or "").upper()
+
+    head = f"🧠 Why {_money(offer)} on {_name(deal)}" if offer is not None \
+        else f"🧠 How I'm reading {_name(deal)}"
+    lines = [head, ""]
+
+    if floor is not None:
+        turns = len(traj)
+        basis = (f"after {turns} turn{'s' if turns != 1 else ''}"
+                 if turns else "from the listing alone")
+        lines += [f"Their floor reads {_money(floor)}. That's the middle of what "
+                  f"I believe {basis} — not what they've said, what their "
+                  f"behaviour implies.", ""]
+
+    if std is not None and floor is not None:
+        dots = confidence_dots(std, deal.asking)
+        # The meter and this sentence have to agree, so the adjective is read
+        # off the same 0–5 scale the card prints rather than picked separately.
+        temper = {5: "Very confident", 4: "I'm fairly confident",
+                  3: "Moderately confident", 2: "Still loose",
+                  1: "Early — this is wide", 0: "Too early to be confident"}[dots]
+        lines += [f"{temper}: ±{_money(std)}. So I'd be surprised under "
+                  f"{_money(floor - std)}, and surprised if they held out past "
+                  f"{_money(floor + std)}.", ""]
+
+    if action == "WALK":
+        p_close = snap.get("p_close")
+        tail = (f" There's only a {p_close:.0%} chance a deal exists at a price "
+                f"you should pay." if p_close is not None else "")
+        lines += [f"That's why I'm saying walk.{tail} Their floor is above your "
+                  f"ceiling, so every further counter is you bidding against "
+                  f"yourself.", ""]
+    elif offer is not None and p is not None:
+        verb = {"HOLD": "Holding at", "ACCEPT": "Taking it at"}.get(action, "At")
+        lines += [f"{verb} {_money(offer)} there's a {p:.0%} chance they take it "
+                  f"right now. Push lower and that number falls faster than the "
+                  f"money you'd save.", ""]
+
+    found = bluff_turn(deal, traj)
+    if found is not None:
+        turn, delta = found
+        moved = "didn't move at all" if delta < 1 else f"moved {_money(delta)}"
+        lines.append(f"Turn {turn['turn']} is why I'm not blinking: they applied "
+                     f"pressure and the estimate {moved}.")
+
+    return "\n".join(lines).strip()
 
 
 # ── the deal list ────────────────────────────────────────────────────────────
@@ -656,12 +759,19 @@ def help_card() -> str:
         "with them. I read the price out and tell you the number to send back.",
         "",
         'Say "card" for where this one stands.',
+        'Say "why" and I\'ll show you the math behind the number.',
         'Say "deals" to see all of them, then reply with a number to switch.',
         'Say "stats" for everything you\'ve saved.',
         'Say "undo" if you relayed something wrong.',
         'Say "we have a deal" when you close, or "I walked" when you don\'t.',
         "",
         'Rename one with "call this the red Civic". Drop one with "delete the Civic".',
+        "",
+        # §5.2 — the two-tap loop. Worth teaching explicitly: nobody guesses that
+        # a tapback is a command, and once they know, it is the fastest input in
+        # the product.
+        "You can also just tapback my messages:",
+        "👍 sent it · 👎 give me a softer number · ❓ explain · ‼️ focus this deal",
     ])
 
 
@@ -692,6 +802,37 @@ def deal_parked(new_deal: "Deal", parked: "Deal") -> str:
 
 def switched(deal: "Deal") -> str:
     return f"↩️ Back on the {_name(deal)}."
+
+
+# ── tapback replies (§5.2 — reactions as an input channel) ───────────────────
+def offer_locked(deal: "Deal") -> str:
+    """👍 on our recommendation means "sent it". Confirm and get out of the way."""
+    offer = (_snapshot(deal) or {}).get("offer")
+    if offer is None:
+        return "👍 Got it. Tell me what they say."
+    return (f"👍 {_money(offer)} is on the table.\n\n"
+            f"Send me their reply the moment it lands — word for word if you can.")
+
+
+def softer_offer(deal: "Deal", offer: float, p_accept: Optional[float]) -> str:
+    """👎 means "give me a different number". One notch softer, priced honestly.
+
+    The odds move with the number and we say so — the whole product is that the
+    user can see what a softer offer costs them, rather than being told a nicer
+    story about the same car.
+    """
+    lines = [f"Fine — softer number.", "", f"👉 Send {_money(offer)}"]
+    if p_accept is not None:
+        lines.append(f"{IND}{p_accept:.0%} they take it")
+    floor = (_snapshot(deal) or {}).get("floor_point_est")
+    if floor is not None:
+        lines += ["", f"Their floor still reads {_money(floor)}, so this is you "
+                      f"paying for speed. Your call — it's your car."]
+    return "\n".join(lines)
+
+
+def pinned(deal: "Deal") -> str:
+    return f"📌 {_name(deal)} is your focus. Everything unqualified lands here now."
 
 
 def ambiguous_switch(arg: str, candidates: Sequence["Deal"]) -> str:
@@ -835,15 +976,18 @@ def error() -> str:
 
 __all__ = [
     # cards
-    "deal_card", "deal_list", "stats_card", "help_card", "onboarding",
+    "deal_card", "deal_list", "stats_card", "help_card", "onboarding", "explain",
     # copy
     "no_deals", "deal_parked", "switched", "ambiguous_switch", "no_match",
     "confirm_delete", "deleted", "renamed", "undone", "nothing_to_undo",
-    "deal_limit", "throttled",
+    "deal_limit", "throttled", "offer_locked", "softer_offer", "pinned",
     "research_blocked", "research_started", "no_focus", "not_negotiating",
     "unparsed", "closed_message", "walked_message", "error",
     # glyphs + helpers
     "BLOCKS", "DOT_FULL", "DOT_EMPTY", "sparkline", "meter", "confidence_dots",
+    # shared derivations — `render.py` draws the same conjunction this text card
+    # prints, so it must read it from here rather than re-implement it.
+    "bluff_turn", "BLUFF_MOVE_FRACTION",
 ]
 
 

@@ -18,6 +18,7 @@ escape hatch for genuinely ambiguous input.
     LIST    deals · my deals · list · /deals · what am I working on
     SWITCH  switch to X · go to X · X deal · bare int 1-10 · /switch X
     CARD    card · status · where are we · show me · the curve · /card
+    EXPLAIN why · explain · how do you know · show your work · /why
     STATS   stats · how much have I saved · savings · total · /stats
     CLOSE   CLOSE_KW (main.py:50)
     WALK    WALK_KW (main.py:52)
@@ -79,6 +80,7 @@ class Intent(str, Enum):
     RENAME = "RENAME"
     DELETE = "DELETE"
     HELP = "HELP"
+    EXPLAIN = "EXPLAIN"     # §7 B5 — "why", and the ❓ tapback
 
 
 @dataclass
@@ -205,6 +207,21 @@ _EXACT_CARD = {"card", "status", "where are we", "where we at", "show me", "the 
 _ANY_CARD = ("where are we", "where do we stand", "show me the card", "the belief curve",
              "whats the status", "what's the status", "state of play")
 
+# EXPLAIN (§7 B5). Deliberately narrow: "why" is a whole-message command, never
+# a substring, because "he says that's why it's priced high" is a relay and the
+# hard rule says ambiguity resolves toward RELAY. Everything here is either the
+# entire message or a phrase that cannot plausibly appear inside a seller quote.
+_EXACT_EXPLAIN = {"why", "why?", "why that", "why that number", "why not lower",
+                  "explain", "explain that", "explain it", "how come",
+                  "how do you know", "how did you get that", "how'd you get that",
+                  "show your work", "show me the math", "the math", "whats the math",
+                  "what's the math", "says who", "prove it", "justify that",
+                  "on what basis", "where does that come from", "reasoning",
+                  "your reasoning", "why so low", "why so high"}
+_ANY_EXPLAIN = ("how do you know", "show your work", "show me the math",
+                "where does that number come from", "how did you get that",
+                "why that number", "what's your reasoning", "whats your reasoning")
+
 _EXACT_UNDO = {"undo", "nvm", "nevermind", "never mind", "ignore that", "scratch that",
                "disregard", "my bad", "oops", "wrong", "take that back", "undo that",
                "ignore my last", "scratch it", "delete that"}
@@ -247,6 +264,7 @@ _SLASH = {
     "stats": Intent.STATS, "savings": Intent.STATS,
     "help": Intent.HELP, "h": Intent.HELP,
     "undo": Intent.UNDO,
+    "why": Intent.EXPLAIN, "explain": Intent.EXPLAIN, "math": Intent.EXPLAIN,
     "close": Intent.CLOSE, "walk": Intent.WALK,
     "switch": Intent.SWITCH, "go": Intent.SWITCH,
     "name": Intent.RENAME, "rename": Intent.RENAME,
@@ -401,6 +419,11 @@ def classify(text: Optional[str],
 
     if core in _EXACT_CARD or _phrase(norm, _ANY_CARD):
         return Classification(Intent.CARD, why="card")
+
+    # After CARD: "show me" is the card, "show me the math" is the explanation,
+    # and _EXACT_CARD owns the shorter string.
+    if core in _EXACT_EXPLAIN or _phrase(norm, _ANY_EXPLAIN):
+        return Classification(Intent.EXPLAIN, why="explain")
 
     if core in _EXACT_UNDO or _phrase(norm, _ANY_UNDO):
         return Classification(Intent.UNDO, why="undo")

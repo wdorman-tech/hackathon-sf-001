@@ -127,6 +127,25 @@ TABLE: list[tuple[str, Intent, str | None, str | None]] = [
     ("where do we stand", Intent.CARD, None, None),
     ("/card", Intent.CARD, None, None),
 
+    # EXPLAIN (§7 B5) — "why", and whatever the ❓ tapback routes to.
+    ("why", Intent.EXPLAIN, None, None),
+    ("why?", Intent.EXPLAIN, None, None),
+    ("explain", Intent.EXPLAIN, None, None),
+    ("how do you know", Intent.EXPLAIN, None, None),
+    ("show your work", Intent.EXPLAIN, None, None),
+    ("show me the math", Intent.EXPLAIN, None, None),
+    ("why that number", Intent.EXPLAIN, None, None),
+    ("prove it", Intent.EXPLAIN, None, None),
+    ("/why", Intent.EXPLAIN, None, None),
+    ("/explain", Intent.EXPLAIN, None, None),
+    # "show me" alone is the CARD — the shorter string keeps its meaning, and
+    # EXPLAIN only claims the longer phrase that names the math.
+    ("show me", Intent.CARD, None, None),
+    # The hard rule still wins: an explanation request carrying a price is a
+    # relay, because the price is what the seller said.
+    ("why is he still at 5,400", Intent.RELAY, None, None),
+    ("he said that's why it's priced at 6400", Intent.RELAY, None, None),
+
     # STATS
     ("stats", Intent.STATS, None, None),
     ("savings", Intent.STATS, None, None),

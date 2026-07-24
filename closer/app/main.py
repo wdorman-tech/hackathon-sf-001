@@ -59,7 +59,7 @@ RATE_WINDOW = 60.0
 # webhook stamps every event it receives, `/health/inbound` reports the age, and
 # a supervisor (or a human) treats "stale" as "restart `linq webhooks listen`".
 INBOUND_STALE_SECONDS = float(os.getenv("INBOUND_STALE_SECONDS", "900"))
-_INBOUND = {"events": 0, "messages": 0, "ignored": 0,
+_INBOUND = {"events": 0, "messages": 0, "ignored": 0, "reactions": 0,
             "last_event_ts": None, "last_message_ts": None, "last_sender": None,
             "started_at": time.time()}
 
@@ -129,18 +129,35 @@ def _awaiting_asking(deal: Deal) -> bool:
 
 # ── research kickoff (background thread on a long-running host; the /tasks cron
 #    is the serverless fallback) ───────────────────────────────────────────────
+# §5.3: research runs ~30s. Three bubbles over thirty seconds beats one bubble
+# after thirty seconds by a wide margin, and the trace is already being computed
+# — we were throwing it away. Two is the cap: the trace emits a dozen steps and
+# a dozen bubbles is a spammer, not a coach.
+RESEARCH_TRACE_BUBBLES = 2
+
+
 def _do_research(deal_id: str, link: str) -> None:
     deal = STORE.get_deal(deal_id)
     if not deal or deal.state != DealState.AWAITING_RESEARCH:
         return
+
+    streamed: list[str] = []
 
     def on_step(step: dict) -> None:
         d = STORE.get_deal(deal_id)
         if d and d.state == DealState.AWAITING_RESEARCH:
             d.research_steps.append(step)
             STORE.save_deal(d)
+        # Stream the first couple of notes into the thread as they happen.
+        # Decorative and best-effort: a failed trace bubble must never stop the
+        # research it is narrating.
+        note = (step or {}).get("note")
+        if note and len(streamed) < RESEARCH_TRACE_BUBBLES and deal.phone:
+            streamed.append(note)
+            _send_now(deal.phone, f"🔎 {note}")
 
-    payload = research.run_research(link, asking=deal.asking, on_step=on_step)
+    with linq.typing_while(deal.chat_id):
+        payload = research.run_research(link, asking=deal.asking, on_step=on_step)
     d = STORE.get_deal(deal_id)
     if not d or d.state != DealState.AWAITING_RESEARCH:
         return
@@ -407,6 +424,10 @@ def _dispatch(deal: Deal, text: Optional[str], media: list[str], meta: dict, *,
     if c.intent is Kind.CARD:
         return cards.deal_card(deal), "deal", None
 
+    if c.intent is Kind.EXPLAIN:
+        # §7 B5 — "why" and the ❓ tapback land on the same function.
+        return cards.explain(deal), "explain", None
+
     if c.intent is Kind.CLOSE:
         if deal.state is not DealState.NEGOTIATING:
             return cards.not_negotiating(deal), None, None
@@ -456,6 +477,25 @@ def _dispatch(deal: Deal, text: Optional[str], media: list[str], meta: dict, *,
     return _relay(deal, text, media)
 
 
+def _outcome_effect(deal: Deal, before: DealState) -> Optional[str]:
+    """§5.4 — the three effects, derived from the state transition this turn made.
+
+    Read off the transition rather than plumbed out of `_dispatch` so every path
+    that can close a deal gets it for free, and so a re-sent "we have a deal" on
+    an already-closed deal does not fire confetti twice.
+
+    `celebration` outranks `confetti` on a user's very first close: it happens
+    once per account, and it is the moment the product proved itself.
+    """
+    if deal.state is DealState.CLOSED and before is not DealState.CLOSED:
+        others = [d for d in STORE.list_deals(deal.user_id)
+                  if d.id != deal.id and d.state is DealState.CLOSED]
+        return "confetti" if others else "celebration"
+    if deal.state is DealState.WALKED and before is not DealState.WALKED:
+        return "slam"           # the physical thud sells the gravity
+    return None
+
+
 def route_message(deal: Deal, text: Optional[str], media: list[str], *,
                   send: bool, research_bg: bool = True,
                   parked: Optional[Deal] = None) -> str:
@@ -465,6 +505,7 @@ def route_message(deal: Deal, text: Optional[str], media: list[str], *,
     runbook — `parked` is additive and only the webhook sets it.
     """
     meta = STORE.get_user_meta(deal.user_id)
+    before = deal.state
     reply, kind, listed = _dispatch(deal, text, media, meta,
                                     research_bg=research_bg, parked=parked)
     meta["last_card_kind"] = kind
@@ -473,8 +514,14 @@ def route_message(deal: Deal, text: Optional[str], media: list[str], *,
     STORE.set_user_meta(deal.user_id, meta)
 
     if send and deal.phone and linq.available():
+        effect = _outcome_effect(deal, before)
         try:
-            linq.send(deal.phone, reply)
+            # `send_effect` retries without the effect if the API rejects it, so
+            # the close message lands even on the day `confetti` changes meaning.
+            if effect:
+                linq.send_effect(deal.phone, reply, effect)
+            else:
+                linq.send(deal.phone, reply)
         except Exception:
             pass
     return reply
@@ -561,6 +608,100 @@ def _send_now(phone: Optional[str], msg: str) -> None:
             pass
 
 
+# §5.2 — how far a 👎 moves the number. A quarter of the gap between our offer
+# and what they are asking is one visible notch: enough that the user sees a
+# different number, small enough that three taps don't hand over the whole
+# negotiation.
+SOFTER_NOTCH = 0.25
+
+
+def _softer(deal: Deal) -> Optional[tuple[float, Optional[float]]]:
+    """One notch softer than the standing recommendation, priced off the posterior.
+
+    Returns `(offer, p_accept)` or None when there is nothing to soften. The
+    probability is recomputed rather than reused: a softer offer has genuinely
+    better odds and quoting the old ones would be the one lie this product
+    cannot afford.
+    """
+    snap = deal.snapshot or {}
+    offer = snap.get("offer")
+    if offer is None:
+        return None
+    target = deal.last_seller_price or deal.asking
+    if not target or target <= offer:
+        return None
+    nudged = float(offer) + SOFTER_NOTCH * (float(target) - float(offer))
+    belief = deal.belief()
+    return round(nudged, 2), (belief.p_accept(nudged) if belief else None)
+
+
+def _process_reaction(rx: linq.InboundReaction) -> None:
+    """A tapback on one of our messages, treated as a command (§5.2).
+
+    Resolved against the user's focused deal rather than against the specific
+    message the tapback landed on. In this medium those are the same thing
+    ~always — the tapback is a reply to what we just said — and focus is already
+    the resolution rule every unqualified message uses (§4.2), so the two agree
+    by construction instead of by a second lookup table that could disagree.
+    """
+    user_id = _resolve_user(rx.sender)
+    phone = rx.sender
+    try:
+        deal = _focused_deal(user_id)
+        if deal is None:
+            return
+        kind = rx.reaction
+
+        if kind == "question":                      # ❓ explain the math
+            _send_now(phone, cards.explain(deal))
+            return
+        if kind == "like":                          # 👍 "sent it"
+            _send_now(phone, cards.offer_locked(deal))
+            return
+        if kind == "emphasize":                     # ‼️ pin this deal
+            STORE.set_focus(user_id, deal.id)
+            _send_now(phone, cards.pinned(deal))
+            return
+        if kind == "dislike":                       # 👎 a different number
+            softer = _softer(deal)
+            if softer is None:
+                _send_now(phone, cards.unparsed())
+                return
+            offer, p = softer
+            deal.last_user_offer = offer
+            if deal.snapshot:
+                deal.snapshot = {**deal.snapshot, "offer": offer, "p_accept": p}
+            msg = cards.softer_offer(deal, offer, p)
+            deal.log_turn("closer", msg)
+            STORE.save_deal(deal)
+            _send_now(phone, msg)
+    except Exception:
+        # Runs on a worker thread — an escaping exception is a silent no-op the
+        # user reads as the tapback not working. Say something instead.
+        _send_now(phone, cards.error())
+
+
+def _signal_reaction(inb: linq.InboundMessage, deal: Deal) -> None:
+    """A second tapback that says what we *thought*, after the turn resolved.
+
+    §5.1's table is four meanings, but only one of them is knowable before
+    inference. So 👍 lands instantly ("logged it, working") and this adds the
+    meaning-carrying one once we know it: ❗ for a bluff we just caught, ❤️ for
+    the message that closed the deal. iMessage carries several distinct tapback
+    types on one message, so these stack rather than replace.
+
+    Silent by construction — `react` swallows its own failures.
+    """
+    if not inb.message_id:
+        return
+    if deal.state is DealState.CLOSED:
+        linq.react(inb.message_id, "love")
+        return
+    last = (deal.signals_log or [])[-1:]
+    if last and last[0].get("bluff_claim"):
+        linq.react(inb.message_id, "emphasize")
+
+
 def _rate_check(user_id: str, now: Optional[float] = None) -> tuple[bool, bool]:
     """§3: 20 inbound messages per phone per minute. Returns (allowed, notify).
 
@@ -590,6 +731,12 @@ def _process_inbound(inb: linq.InboundMessage) -> str:
     user_id = _resolve_user(inb.sender)
     phone = inb.sender
     try:
+        # §5.1 — acknowledge before any inference runs. Research takes ~30s and
+        # an LLM turn ~3s; in iMessage that silence reads as broken. One API
+        # call, sub-second, and it tells the user we have their message before a
+        # single token is generated. Decorative: `react` never raises.
+        linq.react(inb.message_id, "like")
+
         allowed, notify = _rate_check(user_id)
         if not allowed:
             msg = cards.throttled()
@@ -603,8 +750,14 @@ def _process_inbound(inb: linq.InboundMessage) -> str:
             return msg
 
         deal, parked = _inbound_deal(user_id, inb.chat_id, phone, inb.text)
-        return route_message(deal, inb.text, inb.media_urls,
-                             send=True, research_bg=True, parked=parked)
+        # §5.3 — hold a typing indicator for the whole turn. `typing_while`
+        # clears it in a `finally`, so an exception below cannot leave the thread
+        # showing us typing forever.
+        with linq.typing_while(inb.chat_id or deal.chat_id):
+            reply = route_message(deal, inb.text, inb.media_urls,
+                                  send=True, research_bg=True, parked=parked)
+        _signal_reaction(inb, deal)
+        return reply
     except Exception:
         # This runs on a worker thread: an escaping exception is a text that
         # silently never arrives. Never apologise, never explain the stack.
@@ -630,6 +783,19 @@ async def webhook(request: Request,
     except Exception:
         _INBOUND["ignored"] += 1
         return {"ok": True, "ignored": "no json"}
+    # §5.2 — a tapback on one of our messages is a first-class command. Checked
+    # before `parse_webhook` because reaction events are a different shape
+    # entirely; `parse_reaction` drops our own echoes (`is_from_me`), without
+    # which every 👍 we send in §5.1 would re-enter as user input.
+    rx = linq.parse_reaction(body)
+    if rx is not None:
+        if rx.removed or not rx.reaction:
+            _INBOUND["ignored"] += 1
+            return {"ok": True, "ignored": "reaction"}
+        _INBOUND["reactions"] += 1
+        asyncio.create_task(asyncio.to_thread(_process_reaction, rx))
+        return {"ok": True}
+
     inb = linq.parse_webhook(body)
     if not inb or not inb.has_content():
         _INBOUND["ignored"] += 1
