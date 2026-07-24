@@ -13,6 +13,7 @@ store engine-agnostic (a teammate's tuned engine drops in with no migration).
 
 from __future__ import annotations
 
+import re
 import time
 import uuid
 from enum import Enum
@@ -30,6 +31,52 @@ from app.engine import BeliefState, Signals
 # flow is built around — counter, converge, then hold. Decision-layer only; the
 # posterior over the seller's floor is identical either way.
 OFFER_CEILING = "V"
+
+
+def normalize_e164(handle: Optional[str]) -> Optional[str]:
+    """Best-effort E.164 for a Linq sender handle.
+
+    Linq usually delivers `+12055551234`, but handles also arrive as
+    `12055551234`, `(205) 555-1234`, or padded with whitespace. Normalizing on
+    every read is what stops one phone becoming two users — and therefore two
+    disjoint sets of deals. iMessage Apple-ID handles are emails, not numbers;
+    those pass through lowercased rather than being mangled into digits.
+    """
+    if not handle:
+        return None
+    raw = handle.strip()
+    if not raw:
+        return None
+    if "@" in raw:                                   # Apple ID / email handle
+        return raw.removeprefix("mailto:").lower()
+    digits = re.sub(r"\D", "", raw)
+    if not digits:
+        return None
+    if raw.startswith("+"):
+        return "+" + digits
+    if len(digits) == 10:                            # bare US number
+        return "+1" + digits
+    if len(digits) == 11 and digits.startswith("1"):
+        return "+" + digits
+    return "+" + digits
+
+
+def user_id_for(handle: Optional[str]) -> str:
+    """`user_id = "phone:" + normalize_e164(sender_handle)` — the whole auth system.
+
+    Linq's webhook carries `data.sender_handle.handle`, the E.164 number Apple
+    resolved for the sender. It is not user-supplied: it comes from the carrier
+    /Apple side of the connection. So there is no signup, no login, no session,
+    and isolation is automatic — a different phone is a different `user_id` and
+    no code path reads across them.
+
+    Trust model, deliberately chosen: we trust Linq's sender handle. A SIM swap
+    or a spoofed handle would impersonate a user. For a negotiation coach whose
+    worst case is someone seeing another person's car deal, that is the right
+    trade for this event.
+    """
+    normalized = normalize_e164(handle)
+    return f"phone:{normalized}" if normalized else "phone:unknown"
 
 
 class DealState(str, Enum):
@@ -62,6 +109,7 @@ class Deal(BaseModel):
     chat_id: Optional[str] = None              # Linq chat id (webhook routing)
     phone: Optional[str] = None                # the user's phone (relay source)
     title: str = "New deal"
+    nickname: Optional[str] = None             # user-assigned; wins over `title` in cards
 
     listing_link: Optional[str] = None
     state: DealState = DealState.AWAITING_LINK
@@ -79,6 +127,10 @@ class Deal(BaseModel):
     last_user_offer: Optional[float] = None
     feed: list[TurnRecord] = Field(default_factory=list)
     snapshot: Optional[dict] = None             # latest recommendation + floor_map
+
+    # Frozen at the moment of close. The stats card sums this across every closed
+    # deal, so it cannot be re-derived later from a log that UNDO may have changed.
+    closed_price: Optional[float] = None
 
     created_at: float = Field(default_factory=_now)
     updated_at: float = Field(default_factory=_now)
@@ -101,6 +153,37 @@ class Deal(BaseModel):
             b.update(Signals(**s))
         return b
 
+    def display_name(self) -> str:
+        """What the cards call this deal. A user-set nickname always wins."""
+        return self.nickname or self.title
+
+    def trajectory(self) -> list[dict]:
+        """Per-turn belief history for the deal card.
+
+        Pure derivation over `feed` — every closer turn already carries the full
+        `recommend()` dict, so this needs no new persistence, works on deals
+        created before it existed, and survives UNDO for free (UNDO truncates
+        the feed). `signals` is read off the preceding turn: the seller message
+        that produced this recommendation.
+        """
+        out: list[dict] = []
+        for i, turn in enumerate(self.feed):
+            if not turn.recommendation:
+                continue
+            prev = self.feed[i - 1] if i else None
+            out.append({
+                "turn": len(out) + 1,
+                "ts": turn.ts,
+                "floor_est": turn.recommendation.get("floor_point_est"),
+                "floor_std": turn.recommendation.get("floor_std"),
+                "seller_price": turn.recommendation.get("last_seller_price"),
+                "our_offer": turn.recommendation.get("offer"),
+                "p_accept": turn.recommendation.get("p_accept"),
+                "action": turn.recommendation.get("action"),
+                "signals": (prev.signals if prev else None),
+            })
+        return out
+
     def is_active(self) -> bool:
         return self.state in (DealState.AWAITING_LINK, DealState.AWAITING_RESEARCH,
                               DealState.NEGOTIATING)
@@ -110,6 +193,7 @@ class Deal(BaseModel):
         return {
             "id": self.id,
             "title": self.title,
+            "nickname": self.nickname,
             "state": self.state.value,
             "listing_link": self.listing_link,
             "phone": self.phone,
@@ -120,7 +204,9 @@ class Deal(BaseModel):
             "research_steps": self.research_steps,
             "last_seller_price": self.last_seller_price,
             "last_user_offer": self.last_user_offer,
+            "closed_price": self.closed_price,
             "snapshot": self.snapshot,
+            "trajectory": self.trajectory(),
             "feed": [t.model_dump() for t in self.feed],
             "created_at": self.created_at,
             "updated_at": self.updated_at,

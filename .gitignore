@@ -16,3 +16,6 @@ __pycache__/
 # Local dev artifacts (screenshots, browser-automation dumps)
 .playwright-mcp/
 /*.png
+
+# Local deal storage (FileStore)
+closer/data/
