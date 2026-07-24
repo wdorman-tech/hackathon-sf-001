@@ -125,22 +125,39 @@ def _trajectory(deal: "Deal") -> list[dict]:
 
 
 # ── the three shared glyph helpers ───────────────────────────────────────────
-def sparkline(values: Sequence[Optional[float]]) -> str:
-    """One block per value, scaled across the series' own min/max.
+# A four-turn arc drawn as four blocks is a smudge, not a chart — verified by
+# rendering it at 17px in the system proportional font at iPhone width, which
+# is the only way to see it (a monospace terminal flatters it). Each turn gets
+# several columns instead, so the shape reads as a staircase. Step-hold, so no
+# data point is invented and none is dropped: it is the same series, wider.
+SPARK_WIDTH = 12
+
+
+def sparkline(values: Sequence[Optional[float]], *, width: Optional[int] = None) -> str:
+    """Block-element sparkline, scaled across the series' own min/max.
 
     Two equal values must produce the same glyph — that is the entire point on
     the bluff turn, where the floor did not move and the picture has to show it.
-    A flat series renders as a flat mid-height line rather than dividing by zero.
+    Widening makes that stronger, not weaker: two equal turns become one long
+    visible plateau instead of two adjacent identical characters.
+
+    `width` step-holds the series out to that many columns. It never downsamples
+    — a series longer than `width` keeps one column per value, because losing a
+    turn off a nine-turn negotiation is worse than a narrow chart. A flat series
+    renders flat at mid height rather than dividing by zero.
     """
     nums = [float(v) for v in values if v is not None]
     if not nums:
         return ""
+    n = len(nums)
+    cols = n if (width is None or n < 2) else max(n, width)
     lo, hi = min(nums), max(nums)
     if hi - lo < 1e-9:
-        return BLOCKS[len(BLOCKS) // 2] * len(nums)
+        return BLOCKS[len(BLOCKS) // 2] * cols
     span = hi - lo
-    return "".join(BLOCKS[min(len(BLOCKS) - 1, int((v - lo) / span * len(BLOCKS)))]
-                   for v in nums)
+    return "".join(
+        BLOCKS[min(len(BLOCKS) - 1, int((nums[i * n // cols] - lo) / span * len(BLOCKS)))]
+        for i in range(cols))
 
 
 def meter(filled: int, total: int = 5) -> str:
@@ -174,6 +191,11 @@ _ACTION_LINE = {
 
 # The user relays in third person — "he says three other people are coming".
 # Strip the reporting verb so the card quotes the claim, not the relay.
+_DANGLING = {"so", "and", "but", "or", "if", "because", "since", "that", "which",
+             "he", "she", "they", "it", "we", "i", "you", "the", "a", "an", "to",
+             "for", "with", "at", "in", "on", "of", "is", "was", "he's", "she's",
+             "they're", "it's", "i'm", "not", "no", "just", "then", "than"}
+
 _RELAY_PREAMBLE = re.compile(
     r"^(?:and\s+)?(?:he|she|they|the seller|seller|dude|guy)\s+"
     r"(?:just\s+)?(?:says?|said|is saying|claims?|claimed|goes|wrote|texted|replied)"
@@ -192,8 +214,13 @@ def _quote(text: Optional[str], limit: int = 58) -> Optional[str]:
     t = _RELAY_PREAMBLE.sub("", t).strip()
     if len(t) <= limit:
         return t
-    cut = t[:limit].rsplit(" ", 1)[0]
-    return (cut or t[:limit]).rstrip(" ,;:-") + "…"
+    cut = t[:limit].rsplit(" ", 1)[0] or t[:limit]
+    # Truncating mid-clause leaves "…coming Saturday, so he's…" hanging. Drop
+    # trailing connectives so the quote ends on something the seller said.
+    words = cut.split()
+    while len(words) > 3 and words[-1].strip(",;:").lower() in _DANGLING:
+        words.pop()
+    return " ".join(words).rstrip(" ,;:-") + "…"
 
 
 def _bluff_block(deal: "Deal", traj: list[dict]) -> list[str]:
@@ -341,7 +368,7 @@ def deal_card(deal: "Deal") -> str:
         else:
             way = "down" if delta < 0 else "up"
             lines.append(f"Turn 1 it read {_money(first)} — {way} {_money(abs(delta))}")
-    spark = sparkline(floors)
+    spark = sparkline(floors, width=SPARK_WIDTH)
     if spark and len(traj) > 1:
         lines.append(f"{spark}  turn 1 → {turns}")
 
@@ -390,9 +417,10 @@ def _list_detail(deal: "Deal") -> Optional[str]:
             return f"saved {_money(saved)}"
         return f"paid {_money(paid)}" if paid is not None else None
     if state == "WALKED":
+        # The row above already says "walked"; repeating it costs a line and
+        # reads as a stutter on a phone.
         avoided = _avoided(deal)
-        return (f"walked — {_money(avoided)} over fair value" if avoided
-                else "walked away")
+        return f"{_money(avoided)} over fair value" if avoided else None
     if state == "AWAITING_LINK":
         return "waiting on a link"
     if deal.asking is None:
@@ -445,12 +473,16 @@ def deal_list(deals: Sequence["Deal"], focus_id: Optional[str] = None) -> str:
     if not deals:
         return no_deals()
 
+    # No trailing emoji on a list row. A long title plus a trailing glyph wraps
+    # at 390px and strands the emoji alone on the next line — visible only when
+    # you render this in a proportional font at phone width. The word already
+    # says it; the emoji was decoration that cost a line.
     label = {
         "AWAITING_LINK": "waiting on a link",
         "AWAITING_RESEARCH": "researching…",
         "NEGOTIATING": "negotiating",
-        "CLOSED": "closed 🤝",
-        "WALKED": "walked 🚶",
+        "CLOSED": "closed",
+        "WALKED": "walked",
     }
     out = ["📋 Your deals", ""]
     for i, d in enumerate(deals, 1):

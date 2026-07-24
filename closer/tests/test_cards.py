@@ -92,13 +92,26 @@ def test_deal_card_has_every_block(camry) -> None:
     assert "41% they take it" in card
 
 
-def test_deal_card_sparkline_is_one_block_per_turn(camry) -> None:
+def test_deal_card_sparkline_is_wide_enough_to_read(camry) -> None:
+    """Four blocks is a smudge in a proportional font at phone width. The
+    series is step-held out to `SPARK_WIDTH` so the shape reads as a
+    staircase — same data, more columns."""
     line = next(ln for ln in cards.deal_card(camry).splitlines()
                 if ln.strip().startswith(tuple(cards.BLOCKS)))
     spark = line.split("  ")[0]
-    assert len(spark) == 4
+    assert len(spark) == cards.SPARK_WIDTH
     assert all(ch in cards.BLOCKS for ch in spark)
     assert line.endswith("turn 1 → 4")
+
+
+def test_the_sparkline_plateau_shows_the_bluff(camry) -> None:
+    """Turns 2 and 3 barely differ, so they must render as one flat run — that
+    run IS the bluff, drawn."""
+    line = next(ln for ln in cards.deal_card(camry).splitlines()
+                if ln.strip().startswith(tuple(cards.BLOCKS)))
+    spark = line.split("  ")[0]
+    runs = [len(list(g)) for _, g in __import__("itertools").groupby(spark)]
+    assert max(runs) >= 6, f"turns 2-3 should merge into one plateau: {spark}"
 
 
 def test_the_bluff_block_fires_and_names_the_turn(camry) -> None:
@@ -234,9 +247,17 @@ def test_deal_list_says_what_each_deal_is_doing(all_deals) -> None:
     text = cards.deal_list(all_deals, all_deals[0].id)
     assert "negotiating, turn 4" in text
     assert "researching…" in text
-    assert "closed 🤝" in text and "saved $2,384" in text
-    assert "walked 🚶" in text
+    assert "closed" in text and "saved $2,384" in text
+    assert "walked" in text and "$800 over fair value" in text
     assert "$6,400 ask · hold at $4,992 next" in text
+
+
+def test_list_rows_carry_no_trailing_emoji(all_deals) -> None:
+    """A long title plus a trailing glyph wraps at 390px and strands the emoji
+    on its own line. Only the header may carry one."""
+    lines = cards.deal_list(all_deals, all_deals[0].id).splitlines()
+    for line in lines[1:]:
+        assert not line.rstrip().endswith(("🤝", "🚶", "🚗", "🔎")), line
 
 
 def test_deal_list_hint_names_a_deal_you_can_actually_switch_to(all_deals) -> None:
@@ -256,9 +277,12 @@ def test_deal_list_empty() -> None:
     assert "No deals yet" in text and "link" in text
 
 
-def test_deal_list_never_repeats_a_state_label(fresh) -> None:
-    text = cards.deal_list([fresh], fresh.id)
-    assert text.count("waiting on a link") == 1
+@pytest.mark.parametrize("name,word", [(fixtures.FRESH, "waiting on a link"),
+                                       (fixtures.TACOMA, "walked")])
+def test_deal_list_never_repeats_a_state_label(name: str, word: str) -> None:
+    """A detail line that restates the state reads as a stutter on a phone."""
+    deal = fixtures.load(name)
+    assert cards.deal_list([deal], deal.id).count(word) == 1
 
 
 # ── savings math, §4.5 ───────────────────────────────────────────────────────
