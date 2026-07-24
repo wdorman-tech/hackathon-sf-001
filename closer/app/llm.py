@@ -247,7 +247,7 @@ def _money(x) -> str:
         return str(x)
 
 
-def _rules_draft(rec: dict, sig: Signals, expert: dict, state: dict) -> str:
+def _rules_draft(rec: dict, sig: Signals, research: dict, state: dict) -> str:
     action = rec["action"]
     offer, floor = rec["offer"], rec.get("floor_point_est")
     pct = int(round(rec.get("p_accept", 0) * 100))
@@ -260,7 +260,7 @@ def _rules_draft(rec: dict, sig: Signals, expert: dict, state: dict) -> str:
                 f"Hold at {_money(offer)} and let them come back.\n\n"
                 f"Send this: \"Appreciate it, but {_money(offer)} is where I'm at. Let me know.\"")
     if action == "WALK":
-        R = expert.get("R") or offer
+        R = research.get("R") or offer
         return (f"Their floor is sitting above your walk-away of {_money(R)}. This one isn't "
                 f"worth chasing — be ready to leave.\n\n"
                 f"Send this: \"I get it, but {_money(R)} is my ceiling given what it needs. "
@@ -272,15 +272,16 @@ def _rules_draft(rec: dict, sig: Signals, expert: dict, state: dict) -> str:
     return f"Recommendation: {action} at {_money(offer)}."
 
 
-def draft_coach_message(recommendation: dict, signals: Signals, expert: dict,
+def draft_coach_message(recommendation: dict, signals: Signals, research: dict,
                         state: dict) -> str:
     if runware.available():
         try:
             payload = {
                 "recommendation": recommendation,
                 "signals": signals.as_dict(),
-                "expert": {k: expert.get(k) for k in
-                           ("fair_value", "R", "V", "hidden_costs", "red_flags", "facts")},
+                "research": {k: research.get(k) for k in
+                             ("fair_value", "R", "V", "hidden_costs", "red_flags",
+                              "facts", "sources", "confidence")},
                 "seller_last_price": state.get("last_seller_price"),
                 "your_last_offer": state.get("last_user_offer"),
             }
@@ -291,7 +292,7 @@ def draft_coach_message(recommendation: dict, signals: Signals, expert: dict,
             return runware.text_inference(msgs, max_tokens=350).strip()
         except Exception:
             pass
-    return _rules_draft(recommendation, signals, expert, state)
+    return _rules_draft(recommendation, signals, research, state)
 
 
 # ── smoke test: python -m app.llm  [--smoke] [--models] ──────────────────────
