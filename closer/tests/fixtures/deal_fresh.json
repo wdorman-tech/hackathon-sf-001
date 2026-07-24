@@ -1,0 +1,21 @@
+{
+  "id": "b0808766503f",
+  "user_id": "phone:+12055550100",
+  "chat_id": null,
+  "phone": "+12055550100",
+  "title": "New deal",
+  "listing_link": null,
+  "state": "AWAITING_LINK",
+  "research": null,
+  "asking": null,
+  "R": null,
+  "V": null,
+  "research_steps": [],
+  "signals_log": [],
+  "last_seller_price": null,
+  "last_user_offer": null,
+  "feed": [],
+  "snapshot": null,
+  "created_at": 1753299940.0,
+  "updated_at": 1753299940.0
+}
