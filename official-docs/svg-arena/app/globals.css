@@ -1,0 +1,28 @@
+@import "tailwindcss";
+
+@theme inline {
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+/*
+ * The arena is intentionally a single light theme: SVGs render on white panels,
+ * so a light chrome is the coherent choice and avoids dark-mode contrast bugs.
+ * The page background/text colors come from Tailwind classes in layout.tsx;
+ * we deliberately do NOT override body background here (an unlayered rule would
+ * beat Tailwind utilities in v4).
+ */
+:root {
+  color-scheme: light;
+}
+
+body {
+  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+}
+
+/* Sanitized model SVGs are injected into .svg-frame; make them fill the box. */
+.svg-frame svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}

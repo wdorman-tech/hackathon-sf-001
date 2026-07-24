@@ -1,0 +1,13 @@
+node_modules/
+dist/
+
+# Secrets — never commit real values
+.env
+.env.*
+!.env.example
+
+# Demo storage: wallet metadata (non-sensitive) plus, for Route 2 agents created
+# via the UI, generated agent signing tokens (SENSITIVE — see agentTokens.ts)
+data/
+
+*.log

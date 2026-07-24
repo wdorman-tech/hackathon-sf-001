@@ -1,0 +1,31 @@
+{
+  "name": "agent-server-wallets-x402-example",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Example: Dynamic server wallets assigned to backend agents, and agents authenticating as their own Dynamic user, both paying x402-gated APIs",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "route:server-wallets": "tsx src/serverWallets.ts",
+    "route:agent-wallets": "tsx src/agentWallets.ts",
+    "ui": "tsx src/server.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@dynamic-labs-wallet/core": "1.0.80",
+    "@dynamic-labs-wallet/node": "1.0.80",
+    "@dynamic-labs-wallet/node-evm": "1.0.80",
+    "dotenv": "17.4.2",
+    "express": "5.2.1",
+    "viem": "2.54.1",
+    "x402-fetch": "1.2.0"
+  },
+  "devDependencies": {
+    "@types/express": "5.0.6",
+    "@types/node": "26.0.1",
+    "tsx": "4.22.4",
+    "typescript": "6.0.3"
+  }
+}

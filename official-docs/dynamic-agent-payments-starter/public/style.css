@@ -1,0 +1,303 @@
+:root {
+  color-scheme: light dark;
+  --bg: #0b0d12;
+  --panel: #141821;
+  --panel-raised: #1a1f2b;
+  --border: #262c3a;
+  --text: #e6e9ef;
+  --muted: #8b93a7;
+  --accent: #5b8def;
+  --good: #4caf7d;
+  --bad: #e2685b;
+  font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  padding: 2rem;
+}
+
+.page-header,
+.tabs,
+.tab-panel,
+.log-panel {
+  max-width: 760px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+h1 {
+  font-size: 1.4rem;
+  margin: 0 0 0.25rem;
+}
+
+.subtitle {
+  color: var(--muted);
+  margin: 0 0 0.75rem;
+  font-size: 0.9rem;
+}
+
+.config {
+  color: var(--muted);
+  font-size: 0.8rem;
+  margin: 0 0 1.5rem;
+}
+
+.config code {
+  color: var(--text);
+}
+
+/* --- Tabs --- */
+
+.tabs {
+  display: flex;
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.tab-btn {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  color: var(--muted);
+  padding: 0.7rem 1rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.tab-btn-sub {
+  display: block;
+  font-weight: 400;
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-top: 0.1rem;
+}
+
+.tab-btn.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+.tab-btn.active .tab-btn-sub {
+  color: var(--muted);
+}
+
+.tab-btn:hover:not(.active) {
+  color: var(--text);
+}
+
+.tab-panel {
+  padding-top: 1.25rem;
+}
+
+.tab-panel[hidden] {
+  display: none;
+}
+
+.tab-panel p.desc {
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.5;
+  margin: 0 0 1.5rem;
+}
+
+.tab-panel p.desc code {
+  color: var(--text);
+}
+
+.docs-links {
+  color: var(--muted);
+  font-size: 0.8rem;
+  margin: -0.75rem 0 1.5rem;
+}
+
+.docs-links a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.docs-links a:hover {
+  text-decoration: underline;
+}
+
+/* --- Panel sections (Agents / Create agent) --- */
+
+.panel-section {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.25rem;
+  margin-bottom: 1.25rem;
+}
+
+.panel-section h2 {
+  font-size: 0.95rem;
+  margin: 0 0 0.75rem;
+}
+
+.panel-section .section-desc {
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin: -0.4rem 0 0.9rem;
+}
+
+.empty-state {
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-style: italic;
+}
+
+/* --- Agent cards --- */
+
+.agent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.agent-card {
+  background: var(--panel-raised);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.9rem;
+}
+
+.agent-card .row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.agent-id {
+  font-weight: 600;
+}
+
+.address {
+  font-family: "SF Mono", Menlo, monospace;
+  font-size: 0.8rem;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.balance {
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-top: 0.35rem;
+}
+
+.balance strong {
+  color: var(--text);
+}
+
+.actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 0.7rem;
+}
+
+/* --- Create agent --- */
+
+.add-agent {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.add-agent input {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.45rem 0.65rem;
+  color: var(--text);
+  font-size: 0.85rem;
+}
+
+.add-agent input:focus,
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* --- Buttons --- */
+
+button {
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+button.secondary {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+button:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+/* --- Log panel --- */
+
+.log-panel {
+  margin-top: 1.5rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1rem 1.25rem;
+}
+
+.log-panel h2 {
+  font-size: 1rem;
+  margin: 0 0 0.75rem;
+}
+
+#log {
+  max-height: 360px;
+  overflow-y: auto;
+  font-family: "SF Mono", Menlo, monospace;
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.log-entry {
+  border-bottom: 1px solid var(--border);
+  padding: 0.5rem 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.log-entry:last-child {
+  border-bottom: none;
+}
+
+.log-entry .ts {
+  color: var(--muted);
+}
+
+.log-entry.ok .title {
+  color: var(--good);
+}
+
+.log-entry.err .title {
+  color: var(--bad);
+}

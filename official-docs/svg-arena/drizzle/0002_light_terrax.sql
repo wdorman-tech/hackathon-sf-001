@@ -1,0 +1,1 @@
+ALTER TABLE "prompts" ADD COLUMN "split" text DEFAULT 'pool' NOT NULL;

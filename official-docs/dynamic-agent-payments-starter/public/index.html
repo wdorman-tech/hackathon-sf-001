@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Agent server wallets + x402</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header class="page-header">
+      <h1>Agent server wallets + x402</h1>
+      <p class="subtitle">Two ways to give an agent its own wallet with Dynamic, run step by step.</p>
+      <p class="config" id="config">Loading config…</p>
+    </header>
+
+    <div class="tabs" role="tablist">
+      <button class="tab-btn active" data-tab="route1" role="tab" aria-selected="true" id="tab-btn-route1">
+        Route 1 <span class="tab-btn-sub">Server wallets</span>
+      </button>
+      <button class="tab-btn" data-tab="route2" role="tab" aria-selected="false" id="tab-btn-route2">
+        Route 2 <span class="tab-btn-sub">Agent-managed wallets</span>
+      </button>
+    </div>
+
+    <section class="tab-panel active" id="tab-route1" role="tabpanel" aria-labelledby="tab-btn-route1">
+      <p class="desc">
+        Your backend owns the wallet outright, using its own API token. Assigning a
+        wallet to an agent is just an <code>agentId → wallet</code> mapping.
+      </p>
+      <p class="docs-links">
+        Docs:
+        <a href="https://www.dynamic.xyz/docs/node/wallets/server-wallets/overview" target="_blank" rel="noopener noreferrer">Server Wallets ↗</a>
+        ·
+        <a href="https://www.dynamic.xyz/docs/recipes/integrations/x402/implementation" target="_blank" rel="noopener noreferrer">Using Dynamic with x402 ↗</a>
+      </p>
+
+      <div class="panel-section">
+        <h2>Agents</h2>
+        <div id="route1-agents" class="agent-list"></div>
+      </div>
+
+      <div class="panel-section">
+        <h2>Create agent</h2>
+        <p class="section-desc">Registers a new agent and creates/assigns its wallet in one step.</p>
+        <div class="add-agent">
+          <input type="text" id="route1-new-id" placeholder="agent id (optional)" />
+          <button id="route1-add">Create agent + wallet</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="tab-route2" role="tabpanel" aria-labelledby="tab-btn-route2" hidden>
+      <p class="desc">
+        No developer token, no human. Instead, each agent proves who it is with its
+        own private key — Dynamic calls this an <strong>agent signing token</strong>.
+        It works like a person signing a login message with their crypto wallet,
+        except the agent holds the key and signs itself in, with no human involved.
+        Whoever holds that key <em>is</em> that Dynamic user — a new agent here
+        generates a brand-new key, making it a brand-new Dynamic user with its own
+        wallet.
+      </p>
+      <p class="docs-links">
+        Docs:
+        <a href="https://www.dynamic.xyz/docs/node/agents/overview" target="_blank" rel="noopener noreferrer">Agent Wallets ↗</a>
+        ·
+        <a href="https://www.dynamic.xyz/docs/recipes/integrations/x402/implementation" target="_blank" rel="noopener noreferrer">Using Dynamic with x402 ↗</a>
+      </p>
+
+      <div class="panel-section">
+        <h2>Agents</h2>
+        <div id="route2-agents" class="agent-list"></div>
+      </div>
+
+      <div class="panel-section">
+        <h2>Create agent</h2>
+        <p class="section-desc">
+          Generates a brand-new agent signing token (see above) for this agent, uses
+          it to sign the agent in as a new Dynamic user, and creates that user's
+          wallet — all in one step.
+        </p>
+        <div class="add-agent">
+          <input type="text" id="route2-new-id" placeholder="agent id (optional)" />
+          <button id="route2-add">Create agent + wallet</button>
+        </div>
+      </div>
+    </section>
+
+    <div class="log-panel">
+      <h2>Activity log</h2>
+      <div id="log"></div>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
