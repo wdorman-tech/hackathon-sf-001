@@ -7,7 +7,7 @@
 - **One-liner**: _TBD_
 - **Target user**: _TBD_
 - **Core demo (the thing judges see work)**: _TBD_
-- **Stack**: _TBD_ (default lean: Next.js App Router, AI SDK v6 via Vercel AI Gateway, deploy on Vercel)
+- **Stack**: _TBD_ (default lean: Next.js App Router, Runware for all AI inference, deploy on Vercel)
 
 ## Hackathon constraints
 
@@ -17,7 +17,8 @@
 
 ## Working rules
 
-- Real integrations over mocks. If we need a store/payments/auth/DB/email/AI, provision the real thing (Vercel Marketplace) — no UI-only stand-ins unless explicitly asked.
+- Real integrations over mocks. If we need a store/payments/auth/DB/email, provision the real thing (Vercel Marketplace) — no UI-only stand-ins unless explicitly asked.
+- **All AI inference goes through Runware** — text, vision, image, video, audio, 3D, one endpoint (`POST https://api.runware.ai/v1`, `Authorization: Bearer $RUNWARE_API_KEY`). Models are AIR ids, `creator:family@version` (e.g. `anthropic:claude@sonnet-4.6`); browse https://runware.ai/models. Native task API for anything with image inputs or JSON-schema output; the OpenAI-compatible `/v1/chat/completions` shim is text-only. Credits: https://runware.ai/wallet, code `YCSSHACKATHON`. No direct provider SDKs (`anthropic`, `openai`, `google-genai`) unless Runware genuinely can't do it.
 - Search before building. Reuse existing code and libs.
 - Test the core path before calling it done.
 - Keep a live URL green.

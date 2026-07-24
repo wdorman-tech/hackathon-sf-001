@@ -36,8 +36,14 @@ language↔structure translation on both ends of a numpy core.
 ## 1. STACK & GLOBAL RULES
 
 - **Backend:** Python 3.12, FastAPI, uvicorn, numpy, httpx, pydantic. Single process.
-- **LLM:** Anthropic API (`anthropic` SDK). `claude-sonnet-4-6` for listing/expert-spec/vision
-  extraction; use the same model for per-turn classify+draft (simplicity > latency for MVP).
+- **LLM:** Runware — one endpoint for every model. `POST https://api.runware.ai/v1` with
+  `Authorization: Bearer $RUNWARE_API_KEY`, body = an array of task objects. We use the
+  **native** task API (not the OpenAI-compatible `/v1/chat/completions` shim) because only the
+  native path takes image inputs and enforces JSON schemas — both of which we need. One model
+  everywhere: `anthropic:claude@sonnet-4.6` (text + vision, 1M ctx) for listing/expert-spec/
+  vision extraction and per-turn classify+draft (simplicity > latency for MVP). Model ids are
+  AIR strings, `creator:family@version`; browse them at https://runware.ai/models.
+  Hackathon credits: https://runware.ai/wallet, code `YCSSHACKATHON`.
 - **Messaging:** Linq Partner API v3. **Assume Linq is already connected**: we have
   `LINQ_API_KEY`, `LINQ_FROM_NUMBER`, and the inbound webhook is already pointed at
   `POST {our_base_url}/webhooks/linq`. Do not build number provisioning or onboarding.
@@ -66,6 +72,7 @@ closer/
     main.py            # FastAPI app, routes, wiring
     state.py           # Negotiation dataclass + in-memory store + state machine
     engine.py          # ALL math. Pure numpy. Zero network calls.
+    runware.py         # ONLY file that talks to Runware: auth, textInference POST, JSON schema
     llm.py             # classify / extract_screenshot / draft / listing_parse
     linq.py            # send_message(chat_id/handle, text), webhook payload parsing
     terac.py           # create_job(link, photos) / get_result(job_id), mock mode
@@ -81,7 +88,7 @@ closer/
 ## 2. PHASE 1 — THE ENGINE (0:15–1:00) — build this FIRST
 
 `app/engine.py`. Pure functions + one `BeliefState` class. numpy only. This file must never
-import httpx/anthropic/fastapi.
+import httpx/fastapi or the Runware client.
 
 ### 2.1 Grid & prior
 - Inputs at negotiation start: `asking` (listing price), `R` (walk-away from expert),
@@ -160,21 +167,75 @@ Tune the constants in §2.3 until the printed arc looks believable. Commit.
 
 ## 3. PHASE 2 — LLM LAYER (1:00–1:40)
 
-`app/llm.py`. Four functions, all returning strict JSON (use `response_format`-style prompting:
-"Respond with ONLY a JSON object"; parse with a fence-stripping helper; on parse failure retry
-once, then raise).
+### 3.0 `app/runware.py` — the only file that touches Runware
+
+One function, one httpx client, no SDK:
+
+```python
+async def text_inference(
+    messages: list[dict],             # [{"role": "user"|"assistant", "content": str}]
+    *,
+    schema: dict | None = None,       # JSON Schema → strict structured output
+    images: list[str] | None = None,  # data URIs, https URLs, or Runware media UUIDs
+    system: str | None = None,
+    max_tokens: int = 2048,
+    temperature: float = 0.0,
+) -> str | dict: ...
+```
+
+It POSTs to `RUNWARE_BASE_URL` (default `https://api.runware.ai/v1`) with
+`Authorization: Bearer $RUNWARE_API_KEY` and a one-element task array:
+
+```json
+[{
+  "taskType": "textInference",
+  "taskUUID": "<uuid4>",
+  "model": "anthropic:claude@sonnet-4.6",
+  "messages": [{"role": "user", "content": "..."}],
+  "inputs": {"images": ["data:image/png;base64,iVBORw0KGgo..."]},
+  "settings": {
+    "systemPrompt": "...",
+    "maxTokens": 2048,
+    "temperature": 0,
+    "outputFormat": "JSON",
+    "jsonSchema": {"type": "object", "properties": {}, "required": []}
+  }
+}]
+```
+
+Rules:
+- Fresh `uuid4` per call; the response echoes it. Read the answer from `resp["data"][0]["text"]`.
+- **Never prompt-beg for JSON.** Set `settings.outputFormat: "JSON"` and pass
+  `settings.jsonSchema`; Runware enforces it (a bare schema is auto-wrapped as
+  `{name: "response", schema, strict: true}`). Keep a fence-stripping `json.loads` fallback
+  anyway — on parse failure retry once, then raise.
+- Omit `inputs` entirely when there are no images. Omit `settings.jsonSchema`/`outputFormat`
+  for free-text calls (the coach message).
+- Failures come back as `{"errors": [{"code", "message"}]}` — check `errors` before `data`.
+- **Offline fallback:** if `RUNWARE_API_KEY` is blank, `llm.py` uses a deterministic
+  rules-based classifier (regex for prices, firmness keywords, bluff phrases) so the whole
+  demo runs with no network and no key. The screenshot path degrades to "paste the text
+  instead". This is the stage insurance policy — build it, don't skip it.
+
+### 3.1 `app/llm.py` — four functions
+
+All four call `runware.text_inference`; the first three pass a JSON Schema and get structured
+output back, the fourth returns free text.
 
 1. `parse_listing(text_or_url_context) -> {title, asking, year, miles, notes}` — used only in
    mock/demo mode or when the user pastes listing text; the live-Terac path gets facts from the
    expert instead.
 2. `classify_seller_message(text, prev_seller_price, asking) -> Signals` — the ONLY job is
-   translation to the Signals schema. Prompt must include 3 few-shot examples: a firm small
-   concession, a cheap-talk bluff, a big "final" concession. Temperature 0.
+   translation to the Signals schema (pass that schema as `jsonSchema`). Prompt must include
+   3 few-shot examples: a firm small concession, a cheap-talk bluff, a big "final" concession.
+   `temperature=0`.
 3. `extract_from_screenshot(image_bytes) -> {seller_messages: [str], latest_seller_price: float|None}`
-   — Claude vision. The user screenshots their seller chat; return the seller-side messages in
-   order (ignore the user's own bubbles; instruct the model that seller bubbles are typically
-   left-aligned/gray, the user's right-aligned/blue). Downstream, classify only the latest
-   seller message (concatenate if several arrived since last relay).
+   — Runware vision on the same `anthropic:claude@sonnet-4.6`. Base64-encode the bytes into a
+   data URI (`data:image/png;base64,...`) and pass it in `images=[...]` → `inputs.images`.
+   The user screenshots their seller chat; return the seller-side messages in order (ignore
+   the user's own bubbles; instruct the model that seller bubbles are typically left-aligned/
+   gray, the user's right-aligned/blue). Downstream, classify only the latest seller message
+   (concatenate if several arrived since last relay).
 4. `draft_coach_message(recommendation, signals, expert, state) -> str` — turns the engine's
    numbers into a short, confident iMessage (≤3 short paragraphs, concrete numbers, one
    suggested reply the user can copy-paste verbatim in quotes). Never invent numbers not present
@@ -182,7 +243,8 @@ once, then raise).
 
 **Acceptance:** a `scripts`-style `__main__` in llm.py that runs classify on the three canonical
 messages and prints Signals; screenshot extraction tested with any sample chat screenshot
-(generate one simple test image if none at hand). Commit.
+(generate one simple test image if none at hand). Run it once **with** `RUNWARE_API_KEY` set and
+once with it blank — both must produce usable Signals. Commit.
 
 ---
 
@@ -262,7 +324,9 @@ Layout (this is the demo money-shot, make it clean):
 
 Env (`.env.example`):
 ```
-ANTHROPIC_API_KEY=
+RUNWARE_API_KEY=                              # blank → offline rules-based fallback
+RUNWARE_BASE_URL=https://api.runware.ai/v1
+RUNWARE_MODEL=anthropic:claude@sonnet-4.6     # text + vision, one model for everything
 LINQ_API_KEY=
 LINQ_BASE_URL=https://api.linqapp.com
 LINQ_FROM_NUMBER=

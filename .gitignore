@@ -4,3 +4,15 @@
 !.env.example
 linq-api-key.txt
 .linq/
+
+# Deps / build output
+.venv/
+node_modules/
+dist/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Local dev artifacts (screenshots, browser-automation dumps)
+.playwright-mcp/
+/*.png

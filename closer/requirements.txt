@@ -1,0 +1,10 @@
+# Closer — runtime deps (Python 3.12+; tested on 3.14)
+fastapi>=0.115
+uvicorn[standard]>=0.30
+numpy>=2.0
+httpx>=0.27
+pydantic>=2.7
+python-dotenv>=1.0
+python-multipart>=0.0.9
+pytest>=8.0           # engine tests only
+# Runware needs no SDK: app/runware.py POSTs the native task API with httpx.
