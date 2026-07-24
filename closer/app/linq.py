@@ -66,6 +66,76 @@ def send(to: str, text: str, *, timeout: float = 30.0) -> dict:
     return r.json()
 
 
+# ── seam 2: the iMessage-native surface (§4.7) ───────────────────────────────
+# Frozen at Sync 1 as no-ops so `main.py` can wire the call sites now and Dev 2
+# fills the bodies in Phase 2. Every one of these is fire-and-forget decoration:
+# a tapback that fails must never cost a negotiation turn, so they return a
+# status dict instead of raising, and callers still wrap them in try/except.
+#
+# All four are verified to exist on the CLI (LINQ.md, Phase 0 probes, closer
+# profile). The REST shapes on Partner API v3 are not, so `subprocess` to
+# `linq ... --profile closer` is the guaranteed fallback for the real bodies.
+_STUB = {"ok": False, "stub": True}
+
+
+class InboundReaction(BaseModel):
+    """A tapback on one of our messages (§5.2 — reactions as an input channel)."""
+    chat_id: Optional[str] = None
+    sender: Optional[str] = None
+    message_id: Optional[str] = None
+    reaction: Optional[str] = None           # like | love | question | exclaim | …
+    removed: bool = False
+
+
+def upload_attachment(file_path: str) -> Optional[str]:
+    """Upload bytes, return the permanent `download_url`. Stub until Phase 2.
+
+    CLI: `linq attachments upload --filename --content-type --size` hands back a
+    presigned PUT plus a `download_url`; you upload the bytes yourself.
+    """
+    del file_path
+    return None
+
+
+def send_media(to: str, text: Optional[str], file_path: str) -> dict:
+    """Send an image (the rendered deal card) as a real attachment. Stub."""
+    del to, text, file_path
+    return dict(_STUB)
+
+
+def react(message_id: str, type: str, emoji: Optional[str] = None) -> dict:  # noqa: A002
+    """Tapback a message — 👍 logged, ❗ bluff spotted, ❓ couldn't parse. Stub.
+
+    CLI: `linq messages react <message-id> --type like` (`--operation remove`).
+    """
+    del message_id, type, emoji
+    return dict(_STUB)
+
+
+def typing(chat_id: str, on: bool = True) -> dict:
+    """Typing indicator, bracketing research and every LLM turn. Stub.
+
+    CLI: `linq chats typing <chat-id>` / `--stop`.
+    """
+    del chat_id, on
+    return dict(_STUB)
+
+
+def send_effect(to: str, text: str, effect: str) -> dict:
+    """Send with a screen effect — confetti on close, slam on a walk. Stub.
+
+    CLI: `linq messages send <chat-id> --message "🎉" --effect confetti`.
+    """
+    del effect
+    return send(to, text) if LINQ_API_KEY else dict(_STUB)
+
+
+def parse_reaction(body: dict) -> Optional[InboundReaction]:
+    """Inbound `reaction.added` / `reaction.removed`. Stub until Phase 2."""
+    del body
+    return None
+
+
 def parse_webhook(body: dict) -> Optional[InboundMessage]:
     """Return an InboundMessage for inbound 'message.received' events, else None
     (reactions, typing, delivery receipts, and our own outbound echoes are ignored)."""

@@ -353,21 +353,21 @@ def test_saved_and_avoided_only_apply_to_their_own_state(camry, f150, tacoma) ->
 
 
 def test_closed_price_is_preferred_over_the_derivation(f150) -> None:
-    """Once Lane A persists `closed_price` (§4.3), it wins — a later UNDO can
+    """`closed_price` (§4.3) is frozen at close and wins — a later UNDO can
     change the log the fallback recomputes from."""
-    object.__setattr__(f150, "__dict__",
-                       {**f150.__dict__, "closed_price": 11_000.0})
+    f150.closed_price = 11_000.0
     assert cards._closed_price(f150) == 11_000.0
     assert cards._saved(f150) == pytest.approx(3_900.0)
 
 
-# ── trajectory: works with or without Lane A's method ────────────────────────
-def test_trajectory_is_derived_when_the_model_lacks_the_method(camry) -> None:
+# ── trajectory: the model's method, with the local derivation as a backstop ──
+def test_trajectory_comes_from_the_model(camry) -> None:
     traj = cards._trajectory(camry)
     assert [t["turn"] for t in traj] == [1, 2, 3, 4]
     assert [round(t["floor_est"]) for t in traj] == [5601, 5323, 5327, 5062]
     assert traj[2]["signals"]["bluff_claim"] is True
     assert traj[0]["signals"]["seller_price"] == 6400.0
+    assert "coming to see it Saturday" in traj[2]["seller_text"]
 
 
 def test_trajectory_prefers_the_model_method_when_it_exists(camry) -> None:
@@ -375,6 +375,17 @@ def test_trajectory_prefers_the_model_method_when_it_exists(camry) -> None:
     object.__setattr__(camry, "__dict__",
                        {**camry.__dict__, "trajectory": lambda: sentinel})
     assert cards._trajectory(camry) == sentinel
+
+
+def test_trajectory_falls_back_when_the_model_has_no_method(camry) -> None:
+    """The local derivation is the backstop, and must stay identical to
+    `Deal.trajectory()` — including `seller_text`, which the bluff quote
+    reads. A stand-in with a `feed` and no method is exactly the case."""
+
+    class Standin:
+        feed = camry.feed
+
+    assert cards._trajectory(Standin()) == camry.trajectory()
 
 
 def test_trajectory_skips_closer_turns_with_no_recommendation(f150) -> None:
@@ -567,13 +578,23 @@ def test_closed_and_walked_messages_carry_the_money(f150, tacoma) -> None:
     assert "$800 over fair value" in cards.walked_message(tacoma)
 
 
-# ── nickname (§4.3), read defensively until Lane A lands it ──────────────────
+# ── nickname (§4.3) ──────────────────────────────────────────────────────────
 def test_nickname_wins_over_title(camry) -> None:
-    object.__setattr__(camry, "__dict__", {**camry.__dict__, "nickname": "the beater"})
+    camry.nickname = "the beater"
     assert "the beater" in cards.deal_card(camry)
     assert "2008 Toyota Camry LE" not in cards.deal_card(camry)
 
 
-def test_missing_nickname_falls_back_to_title(camry) -> None:
-    assert not hasattr(camry, "nickname")
+def test_unset_nickname_falls_back_to_title(camry) -> None:
+    assert camry.nickname is None
     assert "2008 Toyota Camry LE" in cards.deal_card(camry)
+
+
+def test_nickname_is_read_defensively(camry) -> None:
+    """`_name` must not require the attribute — `cards` renders stand-in objects
+    in `--demo` and in tests, and a missing nickname is not an error."""
+
+    class Standin:
+        title = "2008 Toyota Camry LE"
+
+    assert cards._name(Standin()) == "2008 Toyota Camry LE"

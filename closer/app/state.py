@@ -163,8 +163,13 @@ class Deal(BaseModel):
         Pure derivation over `feed` — every closer turn already carries the full
         `recommend()` dict, so this needs no new persistence, works on deals
         created before it existed, and survives UNDO for free (UNDO truncates
-        the feed). `signals` is read off the preceding turn: the seller message
-        that produced this recommendation.
+        the feed). `signals` and `seller_text` are read off the preceding turn:
+        the seller message that produced this recommendation.
+
+        `seller_text` is what the deal card quotes in its bluff callout — the
+        seller's own words on the turn the posterior refused to move. Without
+        it the card can only say "the pressure play", which is a template, and
+        the one line judges remember is the quote.
         """
         out: list[dict] = []
         for i, turn in enumerate(self.feed):
@@ -181,6 +186,7 @@ class Deal(BaseModel):
                 "p_accept": turn.recommendation.get("p_accept"),
                 "action": turn.recommendation.get("action"),
                 "signals": (prev.signals if prev else None),
+                "seller_text": (prev.text if prev else None),
             })
         return out
 
