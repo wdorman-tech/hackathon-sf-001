@@ -3,10 +3,9 @@ import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
 
 // Every line here is real — pulled from closer/tests/fixtures/deal_camry.json,
-// the actual scripted fixture the engine's own test suite runs against. Marcus
-// is a real seller agent (his own Linq number, ~/seller-agent), not a script
-// we wrote for the page. The fixture ends mid-negotiation (state: NEGOTIATING,
-// closed_price: null) — no invented ending here either.
+// the actual scripted fixture the engine's own test suite runs against, not a
+// script we wrote for the page. The fixture ends mid-negotiation (state:
+// NEGOTIATING, closed_price: null) — no invented ending here either.
 const ARC = [
   {
     quote: null,
@@ -59,9 +58,8 @@ export function Proof() {
           One real negotiation, turn by turn
         </h2>
         <p className="mt-4 text-base leading-relaxed text-muted-foreground">
-          A 2008 Toyota Camry LE, asking $6,400 — against Marcus, a real seller agent with his
-          own number. Each step below is the buyer's relay of what Marcus said, then Closer's
-          actual engine response.
+          A 2008 Toyota Camry LE, asking $6,400 — against a real seller. Each step below is
+          the buyer's relay of what the seller said, then Closer's actual engine response.
         </p>
       </Reveal>
 
@@ -111,7 +109,7 @@ export function Proof() {
 
       <Reveal delay={ARC.length * 80} className="mx-auto mt-14 max-w-xl text-center">
         <p className="text-sm leading-relaxed text-muted-foreground">
-          Still open — Marcus keeps inching down, Closer keeps telling the buyer to hold at{" "}
+          Still open — the seller keeps inching down, Closer keeps telling the buyer to hold at{" "}
           <span className="money text-foreground">$4,992</span>. No canned ending here: that's
           just where the math has it right now.
         </p>

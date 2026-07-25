@@ -15,9 +15,9 @@ export function Hero() {
       <div className="mx-auto flex max-w-3xl flex-col items-center text-center">
         <Reveal>
           <h1 className="text-balance text-[44px] font-medium leading-[1.04] tracking-[-0.03em] text-foreground sm:text-6xl lg:text-[64px]">
-            Closer.
+            Introducing Closer.
             <br />
-            Your negotiation coach in iMessage.
+            Your negotiation copilot.
           </h1>
         </Reveal>
 
