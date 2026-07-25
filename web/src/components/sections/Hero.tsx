@@ -1,6 +1,7 @@
 import { Reveal } from "@/components/Reveal"
 import { Phone } from "@/components/Phone"
 import { DitherDots } from "@/components/DitherDots"
+import { MarginDecor } from "@/components/MarginDecor"
 import { buttonVariants } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 
@@ -8,13 +9,15 @@ export function Hero() {
   return (
     <section id="top" className="relative overflow-hidden px-4 pt-28 pb-20 sm:pt-32">
       <DitherDots className="-z-10 [mask-image:linear-gradient(to_bottom,black_0%,black_10%,transparent_35%)]" />
+      <MarginDecor side="l" />
+      <MarginDecor side="r" />
 
       <div className="mx-auto flex max-w-3xl flex-col items-center text-center">
         <Reveal>
           <h1 className="text-balance text-[44px] font-medium leading-[1.04] tracking-[-0.03em] text-foreground sm:text-6xl lg:text-[64px]">
-            Introducing Closer.
+            Closer.
             <br />
-            Your negotiation copilot.
+            Your negotiation coach in iMessage.
           </h1>
         </Reveal>
 
@@ -37,7 +40,7 @@ export function Hero() {
                 "group/cta gap-0 pr-2"
               )}
             >
-              <span className="pl-1">Text Closer, try it now</span>
+              <span className="pl-1">Text Closer now</span>
               <span className="ml-3 flex size-9 items-center justify-center bg-white/15 transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] group-hover/cta:translate-x-0.5 group-hover/cta:-translate-y-px">
                 →
               </span>

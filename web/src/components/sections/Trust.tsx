@@ -6,7 +6,7 @@ const PILLARS = [
   {
     icon: Robot01Icon,
     title: "One model, one provider",
-    body: "Every LLM call — research, classify, draft, and screenshot vision — goes through a single Runware model id. No direct provider SDKs, one integration to trust.",
+    body: "Every LLM call — research, classify, draft, and screenshot vision — goes through a single Runware model id. No direct provider SDKs.",
   },
   {
     icon: Shield01Icon,
@@ -16,12 +16,12 @@ const PILLARS = [
   {
     icon: WifiOff01Icon,
     title: "Runs with zero keys",
-    body: "With no API keys at all, the whole app still runs end-to-end — a deterministic rules-based classifier and a heuristic valuation take over. A dead network never kills the demo.",
+    body: "The whole app still runs end-to-end without them — a deterministic rules-based classifier and a heuristic valuation take over. A dead network never kills the demo.",
   },
   {
     icon: Route01Icon,
     title: "Deterministic math",
-    body: "The belief engine is pure numpy — it never imports a network client. Every recommendation is inspectable and reproducible, not a black box.",
+    body: "The belief engine is pure numpy — it never imports a network client. Every recommendation is inspectable and reproducible.",
   },
 ]
 

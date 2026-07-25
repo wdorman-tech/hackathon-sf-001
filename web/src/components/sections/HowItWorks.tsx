@@ -107,7 +107,7 @@ const STEPS = [
   },
   {
     title: "It researches, with receipts",
-    body: "A bounded agentic loop reads the listing, searches for private-party comps, and returns a cited fair value, hidden costs, and red flags — sources included.",
+    body: "A bounded agentic loop reads the listing, searches for private-party comps, and returns a cited fair value, hidden costs, and red flags.",
     Graphic: ResearchGraphic,
     span: "sm:col-span-5",
   },

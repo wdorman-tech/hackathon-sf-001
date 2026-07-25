@@ -29,6 +29,9 @@
   --hairline: 0 0% 18%;
   --ease-spring: cubic-bezier(0.32, 0.72, 0, 1);
   --ease-out-soft: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* Page frame — viewport edge → vertical edge-line */
+  --frame-margin: clamp(16px, 2.5vw, 40px);
 }
 
 @theme inline {
@@ -105,6 +108,68 @@ h1, h2, h3 {
 .money {
   font-family: var(--font-money);
   font-variant-numeric: tabular-nums;
+}
+
+/* ── Page frame: two fixed vertical edge-lines, plus per-section margin
+   texture living in the strip between the viewport edge and the line. ──── */
+.edge-lines {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: var(--frame-margin);
+  right: var(--frame-margin);
+  max-width: 1400px;
+  margin-inline: auto;
+  border-left: 1px solid hsl(var(--border));
+  border-right: 1px solid hsl(var(--border));
+  pointer-events: none;
+  z-index: 10;
+}
+
+.edge-decor {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: var(--frame-margin);
+  pointer-events: none;
+  overflow: hidden;
+  /* fade the whole strip out well before the bottom of the section (the fold) */
+  mask-image: linear-gradient(to bottom, #000 0%, #000 40%, transparent 75%);
+  -webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 40%, transparent 75%);
+}
+.edge-decor-l { left: 0; }
+.edge-decor-r { right: 0; }
+
+/* Dot matrix — 4px grid of 1px dots, fading toward the viewport edge */
+.edge-decor::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(circle, hsl(var(--border)) 1px, transparent 1px);
+  background-size: 4px 4px;
+}
+.edge-decor-l::before {
+  mask-image: radial-gradient(ellipse 80% 70% at 20% 50%, transparent 0%, #000 60%);
+  -webkit-mask-image: radial-gradient(ellipse 80% 70% at 20% 50%, transparent 0%, #000 60%);
+}
+.edge-decor-r::before {
+  mask-image: radial-gradient(ellipse 80% 70% at 80% 50%, transparent 0%, #000 60%);
+  -webkit-mask-image: radial-gradient(ellipse 80% 70% at 80% 50%, transparent 0%, #000 60%);
+}
+
+/* Sparse horizontal hairlines layered on top, scattered down the strip */
+.edge-decor::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(hsl(var(--border)) 1px, transparent 1px),
+    linear-gradient(hsl(var(--border)) 1px, transparent 1px),
+    linear-gradient(hsl(var(--border)) 1px, transparent 1px);
+  background-size: 100% 1px, 100% 1px, 100% 1px;
+  background-position: 0 22%, 0 55%, 0 78%;
+  background-repeat: no-repeat;
+  opacity: 0.6;
 }
 
 /* ── Fixed film-grain overlay — never on scrolling containers ───────────── */

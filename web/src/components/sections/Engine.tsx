@@ -6,7 +6,7 @@ const TERMS = [
   {
     icon: File01Icon,
     title: "Stated-price ceiling",
-    body: "Their floor can't be above what they just offered. Every message narrows the field of the possible.",
+    body: "Their floor can't be above what they just offered. Every message narrows the range.",
   },
   {
     icon: Clock01Icon,
@@ -16,7 +16,7 @@ const TERMS = [
   {
     icon: AlertCircleIcon,
     title: "Cheap talk",
-    body: "“Someone's coming to look at it tomorrow” — a bluff claim with no real price movement barely nudges the curve at all. The bluff, called by math.",
+    body: "“Someone's coming to look at it tomorrow” — a bluff claim with no price behind it, so the curve barely moves.",
   },
 ]
 

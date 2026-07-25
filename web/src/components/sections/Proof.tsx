@@ -61,7 +61,7 @@ export function Proof() {
         <p className="mt-4 text-base leading-relaxed text-muted-foreground">
           A 2008 Toyota Camry LE, asking $6,400 — against Marcus, a real seller agent with his
           own number. Each step below is the buyer's relay of what Marcus said, then Closer's
-          actual engine response back.
+          actual engine response.
         </p>
       </Reveal>
 

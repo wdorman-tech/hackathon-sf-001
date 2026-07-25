@@ -11,7 +11,7 @@ export function TryItLive() {
         </h2>
         <p className="mt-4 text-base leading-relaxed text-muted-foreground">
           Two live numbers, two sides of one negotiation. Scan either card with your camera —
-          it opens a pre-filled text, ready to send.
+          it opens a pre-filled text.
         </p>
       </Reveal>
 

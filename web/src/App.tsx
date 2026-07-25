@@ -1,4 +1,5 @@
 import "@fontsource-variable/dm-sans"
+import { EdgeLines } from "@/components/EdgeLines"
 import { Nav } from "@/components/sections/Nav"
 import { Hero } from "@/components/sections/Hero"
 import { HowItWorks } from "@/components/sections/HowItWorks"
@@ -13,6 +14,7 @@ function App() {
   return (
     <>
       <div className="grain-overlay" aria-hidden="true" />
+      <EdgeLines />
       <Nav />
       <main>
         <Hero />
