@@ -4,7 +4,6 @@ const LINKS = [
   { href: "#how-it-works", label: "How it works" },
   { href: "#engine", label: "The engine" },
   { href: "#proof", label: "Watch it work" },
-  { href: "#try", label: "Try it" },
 ]
 
 export function Footer() {

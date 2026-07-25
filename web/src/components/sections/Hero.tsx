@@ -3,6 +3,7 @@ import { Phone } from "@/components/Phone"
 import { DitherDots } from "@/components/DitherDots"
 import { MarginDecor } from "@/components/MarginDecor"
 import { buttonVariants } from "@/components/ui/button"
+import { BUYER_SMS_HREF } from "@/lib/contacts"
 import { cn } from "@/lib/utils"
 
 export function Hero() {
@@ -34,7 +35,7 @@ export function Hero() {
         <Reveal delay={240}>
           <div className="mt-9 flex flex-wrap items-center justify-center gap-4">
             <a
-              href="#try"
+              href={BUYER_SMS_HREF}
               className={cn(
                 buttonVariants({ variant: "pill", size: "xl" }),
                 "group/cta gap-0 pr-2"

@@ -1,6 +1,7 @@
 import { Reveal } from "@/components/Reveal"
 import { buttonVariants } from "@/components/ui/button"
 import { DitherDots } from "@/components/DitherDots"
+import { BUYER_SMS_HREF } from "@/lib/contacts"
 import { cn } from "@/lib/utils"
 
 export function CTA() {
@@ -16,10 +17,10 @@ export function CTA() {
             No install. No account. Just text it a listing.
           </p>
           <a
-            href="#try"
+            href={BUYER_SMS_HREF}
             className={cn(buttonVariants({ size: "xl" }), "relative mt-9")}
           >
-            Scan a card, send a text ↓
+            Text Closer now
           </a>
         </div>
       </Reveal>

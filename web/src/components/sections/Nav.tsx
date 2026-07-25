@@ -1,13 +1,13 @@
 import { useEffect, useState } from "react"
 import { Logo } from "@/components/Logo"
 import { buttonVariants } from "@/components/ui/button"
+import { BUYER_SMS_HREF } from "@/lib/contacts"
 import { cn } from "@/lib/utils"
 
 const LINKS = [
   { href: "#how-it-works", label: "How it works" },
   { href: "#engine", label: "The engine" },
   { href: "#proof", label: "Watch it work" },
-  { href: "#try", label: "Try it" },
 ]
 
 const BLOCK_HEIGHT = "h-11"
@@ -59,7 +59,7 @@ export function Nav() {
 
         {/* CTA — its own block */}
         <a
-          href="#try"
+          href={BUYER_SMS_HREF}
           className={cn(
             buttonVariants({ variant: "pill", size: "sm" }),
             BLOCK_HEIGHT,

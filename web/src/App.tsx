@@ -7,7 +7,6 @@ import { Engine } from "@/components/sections/Engine"
 import { Proof } from "@/components/sections/Proof"
 import { Trust } from "@/components/sections/Trust"
 import { CTA } from "@/components/sections/CTA"
-import { TryItLive } from "@/components/sections/TryItLive"
 import { Footer } from "@/components/sections/Footer"
 
 function App() {
@@ -23,7 +22,6 @@ function App() {
         <Proof />
         <Trust />
         <CTA />
-        <TryItLive />
       </main>
       <Footer />
     </>
